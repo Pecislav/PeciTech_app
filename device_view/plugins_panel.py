@@ -14,6 +14,12 @@ nej priradi.
 stahovatelny plugin) - obsahuje Dalsi/Predchozi stranka, aby slo
 prepinat stranky tlacitek stejne jako v Elgato appce.
 
+Enkodery: kliknuti na PRAZDNY enkoder (viz device_view.py) otevre
+misto normalniho seznamu slozek rovnou FILTROVANY seznam akci
+oznacenych jako "encoder_ok" (napr. hlasitost, posun stopy) - napric
+vsemi pluginy, bez nutnosti prochazet slozky. Klik na polozku ji
+rovnou priradi danemu enkoderu.
+
 Seznam pluginu/modulu je zatim staticky a vsechny jsou "nainstalovane" -
 skutecny system stahovani/instalace jednotlivych pluginu (aby napr.
 clovek nemusel mit OBS modul vubec zobrazeny, pokud si ho nestahne)
@@ -48,8 +54,8 @@ PLUGINS = [
         "id": "spotify", "name": "Spotify", "icon": "\U0001F3B5", "installed": True,
         "modules": [
             {"id": "play_pause", "name": "Play / Pauza", "icon": "\u23EF"},
-            {"id": "next_track", "name": "Další skladba", "icon": "\u23ED"},
-            {"id": "prev_track", "name": "Předchozí skladba", "icon": "\u23EE"},
+            {"id": "next_track", "name": "Další skladba", "icon": "\u23ED", "encoder_ok": True},
+            {"id": "prev_track", "name": "Předchozí skladba", "icon": "\u23EE", "encoder_ok": True},
         ],
     },
     {
@@ -62,8 +68,8 @@ PLUGINS = [
     {
         "id": "volume", "name": "Hlasitost", "icon": "\U0001F50A", "installed": True,
         "modules": [
-            {"id": "vol_up", "name": "Zvýšit hlasitost", "icon": "\U0001F50A"},
-            {"id": "vol_down", "name": "Snížit hlasitost", "icon": "\U0001F509"},
+            {"id": "vol_up", "name": "Zvýšit hlasitost", "icon": "\U0001F50A", "encoder_ok": True},
+            {"id": "vol_down", "name": "Snížit hlasitost", "icon": "\U0001F509", "encoder_ok": True},
             {"id": "vol_mute", "name": "Ztlumit", "icon": "\U0001F507"},
         ],
     },
@@ -153,10 +159,79 @@ class PluginsPanel(QWidget):
         self.modules_layout.setSpacing(10)
         self.modules_layout.setAlignment(Qt.AlignTop)
 
+        # --- stranka 3: filtrovany seznam pro enkodery (jen "encoder_ok" akce) ---
+        self.encoder_page = QWidget()
+        self.encoder_layout = QVBoxLayout(self.encoder_page)
+        self.encoder_layout.setContentsMargins(0, 0, 0, 0)
+        self.encoder_layout.setSpacing(10)
+        self.encoder_layout.setAlignment(Qt.AlignTop)
+        self._encoder_pick_callback = None
+
         self.stack.addWidget(self.plugins_page)
         self.stack.addWidget(self.modules_page)
+        self.stack.addWidget(self.encoder_page)
 
         self.setStyleSheet(f"background-color: {BG}; border-left: 1px solid rgba(255,255,255,0.06);")
+
+    def show_encoder_suggestions(self, on_pick):
+        """
+        Otevre filtrovany seznam jen s akcemi vhodnymi pro otaceni (encoder_ok).
+        Klik na polozku rovnou zavola on_pick(action) - encoder se priradi bez
+        dalsiho kroku, protoze uz vime, ktereho enkoderu se to tyka.
+        """
+        self._encoder_pick_callback = on_pick
+
+        while self.encoder_layout.count():
+            item = self.encoder_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        back_container = QWidget()
+        back_layout = QHBoxLayout(back_container)
+        back_layout.setContentsMargins(0, 0, 0, 0)
+        back_btn = QPushButton("\u2190 Pluginy")
+        back_btn.setCursor(Qt.PointingHandCursor)
+        back_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {TEXT}; font-size: 13px; font-weight: 700; }}"
+        )
+        back_btn.clicked.connect(lambda: self.stack.setCurrentWidget(self.plugins_page))
+        back_layout.addWidget(back_btn)
+        back_layout.addStretch()
+        self.encoder_layout.addWidget(back_container)
+
+        heading = QLabel("Vhodné pro enkodér")
+        heading.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 700;")
+        self.encoder_layout.addWidget(heading)
+
+        found_any = False
+        for plugin in PLUGINS:
+            for module in plugin.get("modules", []):
+                if module.get("encoder_ok"):
+                    found_any = True
+                    item = ListItem(
+                        module["icon"], f"{plugin['name']} \u2013 {module['name']}",
+                        on_click=lambda m=module, p=plugin: self._pick_for_encoder(m, p),
+                    )
+                    self.encoder_layout.addWidget(item)
+
+        if not found_any:
+            empty = QLabel("Zatím žádné akce vhodné\npro otáčení.")
+            empty.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+            self.encoder_layout.addWidget(empty)
+
+        self.encoder_layout.addStretch()
+        self.stack.setCurrentWidget(self.encoder_page)
+
+    def _pick_for_encoder(self, module: dict, plugin: dict):
+        action = {
+            "icon": module["icon"],
+            "name": f"{plugin['name']} \u2013 {module['name']}",
+            "plugin_id": plugin["id"],
+            "action_id": module["id"],
+        }
+        if self._encoder_pick_callback:
+            self._encoder_pick_callback(action)
+        self.stack.setCurrentWidget(self.plugins_page)
 
     def _open_plugin_page(self, plugin: dict):
         self._open_plugin = plugin
