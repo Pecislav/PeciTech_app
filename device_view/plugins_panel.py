@@ -1,37 +1,47 @@
 """
 device_view/plugins_panel.py
 ------------------------------------------------------------------
-Prava cast (~20 %) obrazovky detailu zarizeni.
+Prava cast (~20 % sirky, cela vyska okna) obrazovky detailu zarizeni.
 
-UX (podle Elgato Stream Deck appky): kazdy plugin (OBS, Spotify...)
-funguje jako slozka - klikem se "otevre" a uvnitr uvidis konkretni
-moduly/akce (napr. u OBS: Spustit stream, Prepnout scenu...). Vyber
-konkretni akci (zvyrazni se oranzove), pak klikni na tlacitko/enkoder
-v obrysu PeciDecku vlevo - ta konkretni akce (ne cely plugin) se na
-nej priradi.
+Nahore jsou dve zalozky:
+  - "Akce"   - kategorie/pluginy, ktere uz mas "nainstalovane" (puvodni
+               rozbalovaci seznam - klik na hlavicku kategorie ji
+               rozbali/sbali na miste, presne jako v Elgato appce).
+               Konkretni akce uvnitr jsou PRETAHNUTELNE (drag & drop)
+               na tlacitko/enkoder v obrysu PeciDecku vlevo.
+  - "Obchod" - pluginy, ktere jeste nemas stazene, s tlacitkem
+               "Instalovat" u kazdeho - po instalaci se presune do "Akce".
+               (Skutecne stahovani/instalace z internetu je vetsi
+               samostatna funkce na priste - tohle je zatim prepinac
+               mezi "co uz mam" a "co si jeste muzu stahnout", presne
+               jak jsi chtel.)
 
-"Navigace" je specialni vestavena kategorie (vzdy dostupna, neni to
-stahovatelny plugin) - obsahuje Dalsi/Predchozi stranka, aby slo
-prepinat stranky tlacitek stejne jako v Elgato appce.
+"Navigace" a "Systém" jsou specialni vestavene kategorie (vzdy dostupne,
+"installed": True, "builtin": True) - obsahuji zakladni funkce appky
+samotne (stranky, otevirani veci, text/klavesy/media), nejsou to
+stahovatelne pluginy.
 
-Enkodery: kliknuti na PRAZDNY enkoder (viz device_view.py) otevre
-misto normalniho seznamu slozek rovnou FILTROVANY seznam akci
-oznacenych jako "encoder_ok" (napr. hlasitost, posun stopy) - napric
-vsemi pluginy, bez nutnosti prochazet slozky. Klik na polozku ji
-rovnou priradi danemu enkoderu.
+Vsechny ostatni (OBS, Spotify, Discord, Hlasitost, Twitch) ted START­UJI
+jako "installed": False - objevi se nejdriv v zalozce "Obchod", teprve
+po kliknuti na "Instalovat" se presunou do "Akce". Tohle je zamerne -
+odpovida to realnemu workflow (nejdriv stahnout plugin, pak ho pouzivat),
+misto aby byly predem nainstalovane vsechny naraz.
 
-Seznam pluginu/modulu je zatim staticky a vsechny jsou "nainstalovane" -
-skutecny system stahovani/instalace jednotlivych pluginu (aby napr.
-clovek nemusel mit OBS modul vubec zobrazeny, pokud si ho nestahne)
-je vetsi samostatna funkce na priste.
+"Hlasitost" ma jen jednu polozku "Nastavit hlasitost" s "has_amount":
+True - v konfiguracnim panelu dole (device_view.py) se pak misto dvou
+oddelenych "zvysit/snizit" zobrazi jeden posuvnik 0-100.
 """
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QStackedWidget
+import json
 
-from .device_view import BG, TEXT, TEXT_MUTED, ORANGE
+from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtGui import QDrag
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
+    QScrollArea, QApplication, QStackedWidget,
+)
 
-CARD_BG = "#1c1c1f"
+from .device_view import BG, TEXT, TEXT_MUTED, ORANGE, ACTION_MIME_TYPE
 
 PLUGINS = [
     {
@@ -42,7 +52,19 @@ PLUGINS = [
         ],
     },
     {
-        "id": "obs", "name": "OBS Studio", "icon": "\U0001F3A5", "installed": True,
+        "id": "system", "name": "Systém", "icon": "\U0001F5A5", "installed": True, "builtin": True,
+        "modules": [
+            {"id": "open_website", "name": "Otevřít web", "icon": "\U0001F310", "input_type": "url"},
+            {"id": "open_app", "name": "Otevřít aplikaci", "icon": "\U0001F4F1", "input_type": "path"},
+            {"id": "type_text", "name": "Napsat text", "icon": "\U0001F4DD", "input_type": "text"},
+            {"id": "hotkey", "name": "Klávesová zkratka", "icon": "\u2328", "input_type": "hotkey"},
+            {"id": "media_play_pause", "name": "Média: Přehrát/Pauza", "icon": "\u23EF"},
+            {"id": "media_next", "name": "Média: Další", "icon": "\u23ED"},
+            {"id": "media_prev", "name": "Média: Předchozí", "icon": "\u23EE"},
+        ],
+    },
+    {
+        "id": "obs", "name": "OBS Studio", "icon": "\U0001F3A5", "installed": False,
         "modules": [
             {"id": "start_stream", "name": "Spustit stream", "icon": "\U0001F534"},
             {"id": "stop_stream", "name": "Zastavit stream", "icon": "\u23F9"},
@@ -51,224 +73,278 @@ PLUGINS = [
         ],
     },
     {
-        "id": "spotify", "name": "Spotify", "icon": "\U0001F3B5", "installed": True,
+        "id": "spotify", "name": "Spotify", "icon": "\U0001F3B5", "installed": False,
         "modules": [
             {"id": "play_pause", "name": "Play / Pauza", "icon": "\u23EF"},
-            {"id": "next_track", "name": "Další skladba", "icon": "\u23ED", "encoder_ok": True},
-            {"id": "prev_track", "name": "Předchozí skladba", "icon": "\u23EE", "encoder_ok": True},
+            {"id": "next_track", "name": "Další skladba", "icon": "\u23ED"},
+            {"id": "prev_track", "name": "Předchozí skladba", "icon": "\u23EE"},
         ],
     },
     {
-        "id": "discord", "name": "Discord", "icon": "\U0001F4AC", "installed": True,
+        "id": "discord", "name": "Discord", "icon": "\U0001F4AC", "installed": False,
         "modules": [
             {"id": "toggle_mute", "name": "Mute / Unmute", "icon": "\U0001F3A4"},
             {"id": "toggle_deafen", "name": "Deafen", "icon": "\U0001F3A7"},
         ],
     },
     {
-        "id": "volume", "name": "Hlasitost", "icon": "\U0001F50A", "installed": True,
+        "id": "volume", "name": "Hlasitost", "icon": "\U0001F50A", "installed": False,
         "modules": [
-            {"id": "vol_up", "name": "Zvýšit hlasitost", "icon": "\U0001F50A", "encoder_ok": True},
-            {"id": "vol_down", "name": "Snížit hlasitost", "icon": "\U0001F509", "encoder_ok": True},
+            {"id": "set_volume", "name": "Nastavit hlasitost", "icon": "\U0001F50A", "has_amount": True},
             {"id": "vol_mute", "name": "Ztlumit", "icon": "\U0001F507"},
         ],
     },
     {
-        "id": "twitch", "name": "Twitch", "icon": "\U0001F4FA", "installed": True,
+        "id": "twitch", "name": "Twitch", "icon": "\U0001F4FA", "installed": False,
         "modules": [
             {"id": "marker", "name": "Přidat marker", "icon": "\U0001F4CD"},
+        ],
+    },
+    {
+        # Priklad pluginu, co jeste NENI nainstalovany - ukazuje se v zalozce "Obchod".
+        "id": "philips_hue", "name": "Philips Hue", "icon": "\U0001F4A1", "installed": False,
+        "modules": [
+            {"id": "toggle_lights", "name": "Zapnout/vypnout světla", "icon": "\U0001F4A1"},
         ],
     },
 ]
 
 
-class ListItem(QFrame):
-    """Jeden radek v seznamu - plugin (slozka) i konkretni modul/akce pouzivaji stejny vzhled."""
+class DraggableModuleItem(QFrame):
+    """Jedna konkretni akce uvnitr rozbalene kategorie - da se pretahnout na tlacitko/enkoder."""
 
-    def __init__(self, icon: str, name: str, on_click):
+    def __init__(self, action: dict):
         super().__init__()
-        self.selected = False
-        self.on_click = on_click
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(52)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
-        label = QLabel(f"{icon}  {name}")
-        label.setStyleSheet(f"color: {TEXT}; font-size: 13px; background: transparent; border: none;")
+        self.action = action
+        self.setCursor(Qt.OpenHandCursor)
+        self.setFixedHeight(36)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 4)
+        label = QLabel(f"{action['icon']}  {action['name']}")
+        label.setStyleSheet(f"color: {TEXT}; font-size: 12px; background: transparent; border: none;")
         label.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addWidget(label)
-
-        self._apply_style()
+        self.setStyleSheet("""
+            QFrame { background-color: transparent; border-radius: 8px; }
+            QFrame:hover { background-color: rgba(255,255,255,0.05); }
+        """)
+        self._drag_start = None
 
     def mousePressEvent(self, event):
-        self.on_click()
+        if event.button() == Qt.LeftButton:
+            self._drag_start = event.position().toPoint()
         super().mousePressEvent(event)
 
-    def set_selected(self, selected: bool):
-        self.selected = selected
-        self._apply_style()
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None or not (event.buttons() & Qt.LeftButton):
+            return
+        if (event.position().toPoint() - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+            return
 
-    def _apply_style(self):
-        border = ORANGE if self.selected else "rgba(255,255,255,0.06)"
-        bg = "rgba(255,122,41,0.08)" if self.selected else CARD_BG
-        self.setStyleSheet(f"QFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 10px; }}")
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(ACTION_MIME_TYPE, json.dumps(self.action).encode("utf-8"))
+        drag.setMimeData(mime)
+
+        # Aby behem tazeni bylo videt, co vlastne "nesu" - bez tohohle
+        # QDrag nekdy nic nezobrazi a vypada to, jako by se nic netahalo.
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(event.position().toPoint())
+
+        drag.exec(Qt.CopyAction)
+        self._drag_start = None
+
+
+class CategorySection(QWidget):
+    """Rozbalovaci kategorie (slozka) - klik na hlavicku ji rozbali/sbali na miste (jako v Elgato appce)."""
+
+    def __init__(self, plugin: dict, expanded: bool = False):
+        super().__init__()
+        self.plugin = plugin
+        self._expanded = expanded
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        self.header_btn = QPushButton()
+        self.header_btn.setCursor(Qt.PointingHandCursor)
+        self.header_btn.clicked.connect(self._toggle)
+        outer.addWidget(self.header_btn)
+
+        self.content = QWidget()
+        content_layout = QVBoxLayout(self.content)
+        content_layout.setContentsMargins(20, 2, 4, 8)
+        content_layout.setSpacing(2)
+        for module in plugin.get("modules", []):
+            action = {
+                "icon": module["icon"],
+                "name": module["name"],
+                "plugin_id": plugin["id"],
+                "action_id": module["id"],
+                "has_amount": module.get("has_amount", False),
+                "input_type": module.get("input_type"),
+            }
+            content_layout.addWidget(DraggableModuleItem(action))
+        outer.addWidget(self.content)
+
+        self._refresh()
+
+    def _toggle(self):
+        self._expanded = not self._expanded
+        self._refresh()
+
+    def _refresh(self):
+        self.content.setVisible(self._expanded)
+        chevron = "\u25BE" if self._expanded else "\u25B8"
+        self.header_btn.setText(f"{chevron}  {self.plugin['icon']}  {self.plugin['name']}")
+        self.header_btn.setStyleSheet(f"""
+            QPushButton {{
+                text-align: left; background-color: transparent; border: none;
+                color: {TEXT}; font-size: 13px; font-weight: 700; padding: 8px 4px;
+            }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,0.05); border-radius: 6px; }}
+        """)
 
 
 class PluginsPanel(QWidget):
-    """Dve stranky: seznam pluginu (slozky) a moduly otevreneho pluginu (s tlacitkem zpet)."""
+    """Zalozky Akce/Obchod nahore + pod tim bud rozbalovaci kategorie, nebo seznam k instalaci."""
 
-    def __init__(self, on_action_selected):
+    def __init__(self):
         super().__init__()
-        self._on_action_selected = on_action_selected
-        self._open_plugin = None
-        self._module_entries = []  # list of (ListItem, module_dict)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 24, 16, 16)
         outer.setSpacing(10)
 
+        heading = QLabel("Pluginy")
+        heading.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
+        outer.addWidget(heading)
+
+        tabs_row = QHBoxLayout()
+        tabs_row.setSpacing(6)
+        self.actions_tab_btn = QPushButton("Akce")
+        self.store_tab_btn = QPushButton("Obchod")
+        self.actions_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.store_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.actions_tab_btn.clicked.connect(lambda: self._switch_tab(0))
+        self.store_tab_btn.clicked.connect(lambda: self._switch_tab(1))
+        tabs_row.addWidget(self.actions_tab_btn)
+        tabs_row.addWidget(self.store_tab_btn)
+        tabs_row.addStretch()
+        outer.addLayout(tabs_row)
+
         self.stack = QStackedWidget()
         outer.addWidget(self.stack)
 
-        # --- stranka 1: seznam pluginu ---
-        self.plugins_page = QWidget()
-        plugins_layout = QVBoxLayout(self.plugins_page)
-        plugins_layout.setContentsMargins(0, 0, 0, 0)
-        plugins_layout.setSpacing(10)
-        plugins_layout.setAlignment(Qt.AlignTop)
-
-        heading = QLabel("Pluginy")
-        heading.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
-        plugins_layout.addWidget(heading)
-
-        hint = QLabel("Klikni na plugin a vyber\nkonkrétní akci.")
+        # --- stranka 0: "Akce" - nainstalovane kategorie ---
+        self.actions_page = QWidget()
+        actions_layout = QVBoxLayout(self.actions_page)
+        actions_layout.setContentsMargins(0, 4, 0, 0)
+        actions_layout.setSpacing(6)
+        hint = QLabel("Přetáhni akci na\ntlačítko nebo enkodér.")
         hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        plugins_layout.addWidget(hint)
+        actions_layout.addWidget(hint)
+        self.actions_scroll = QScrollArea()
+        self.actions_scroll.setWidgetResizable(True)
+        self.actions_scroll.setFrameShape(QFrame.NoFrame)
+        actions_layout.addWidget(self.actions_scroll)
 
-        for plugin in PLUGINS:
-            item = ListItem(plugin["icon"], plugin["name"], on_click=lambda p=plugin: self._open_plugin_page(p))
-            plugins_layout.addWidget(item)
+        # --- stranka 1: "Obchod" - pluginy k instalaci ---
+        self.store_page = QWidget()
+        store_layout = QVBoxLayout(self.store_page)
+        store_layout.setContentsMargins(0, 4, 0, 0)
+        store_layout.setSpacing(6)
+        store_hint = QLabel("Stáhni si další pluginy.")
+        store_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        store_layout.addWidget(store_hint)
+        self.store_scroll = QScrollArea()
+        self.store_scroll.setWidgetResizable(True)
+        self.store_scroll.setFrameShape(QFrame.NoFrame)
+        store_layout.addWidget(self.store_scroll)
 
-        plugins_layout.addStretch()
+        self.stack.addWidget(self.actions_page)
+        self.stack.addWidget(self.store_page)
 
-        # --- stranka 2: moduly otevreneho pluginu ---
-        self.modules_page = QWidget()
-        self.modules_layout = QVBoxLayout(self.modules_page)
-        self.modules_layout.setContentsMargins(0, 0, 0, 0)
-        self.modules_layout.setSpacing(10)
-        self.modules_layout.setAlignment(Qt.AlignTop)
-
-        # --- stranka 3: filtrovany seznam pro enkodery (jen "encoder_ok" akce) ---
-        self.encoder_page = QWidget()
-        self.encoder_layout = QVBoxLayout(self.encoder_page)
-        self.encoder_layout.setContentsMargins(0, 0, 0, 0)
-        self.encoder_layout.setSpacing(10)
-        self.encoder_layout.setAlignment(Qt.AlignTop)
-        self._encoder_pick_callback = None
-
-        self.stack.addWidget(self.plugins_page)
-        self.stack.addWidget(self.modules_page)
-        self.stack.addWidget(self.encoder_page)
+        self._rebuild_actions_list()
+        self._rebuild_store_list()
+        self._switch_tab(0)
 
         self.setStyleSheet(f"background-color: {BG}; border-left: 1px solid rgba(255,255,255,0.06);")
 
-    def show_encoder_suggestions(self, on_pick):
+    def _switch_tab(self, index: int):
+        self.stack.setCurrentIndex(index)
+        active_style = f"""
+            QPushButton {{
+                background-color: {ORANGE}; color: white; border: none;
+                border-radius: 8px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+            }}
         """
-        Otevre filtrovany seznam jen s akcemi vhodnymi pro otaceni (encoder_ok).
-        Klik na polozku rovnou zavola on_pick(action) - encoder se priradi bez
-        dalsiho kroku, protoze uz vime, ktereho enkoderu se to tyka.
+        inactive_style = f"""
+            QPushButton {{
+                background-color: transparent; color: {TEXT_MUTED}; border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,0.05); }}
         """
-        self._encoder_pick_callback = on_pick
+        self.actions_tab_btn.setStyleSheet(active_style if index == 0 else inactive_style)
+        self.store_tab_btn.setStyleSheet(active_style if index == 1 else inactive_style)
 
-        while self.encoder_layout.count():
-            item = self.encoder_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        back_container = QWidget()
-        back_layout = QHBoxLayout(back_container)
-        back_layout.setContentsMargins(0, 0, 0, 0)
-        back_btn = QPushButton("\u2190 Pluginy")
-        back_btn.setCursor(Qt.PointingHandCursor)
-        back_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; border: none; color: {TEXT}; font-size: 13px; font-weight: 700; }}"
-        )
-        back_btn.clicked.connect(lambda: self.stack.setCurrentWidget(self.plugins_page))
-        back_layout.addWidget(back_btn)
-        back_layout.addStretch()
-        self.encoder_layout.addWidget(back_container)
-
-        heading = QLabel("Vhodné pro enkodér")
-        heading.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 700;")
-        self.encoder_layout.addWidget(heading)
-
-        found_any = False
+    def _rebuild_actions_list(self):
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignTop)
         for plugin in PLUGINS:
-            for module in plugin.get("modules", []):
-                if module.get("encoder_ok"):
-                    found_any = True
-                    item = ListItem(
-                        module["icon"], f"{plugin['name']} \u2013 {module['name']}",
-                        on_click=lambda m=module, p=plugin: self._pick_for_encoder(m, p),
-                    )
-                    self.encoder_layout.addWidget(item)
+            if plugin.get("installed", True):
+                layout.addWidget(CategorySection(plugin))
+        layout.addStretch()
+        self.actions_scroll.setWidget(inner)
 
-        if not found_any:
-            empty = QLabel("Zatím žádné akce vhodné\npro otáčení.")
+    def _rebuild_store_list(self):
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignTop)
+
+        available = [p for p in PLUGINS if not p.get("installed", True)]
+        if not available:
+            empty = QLabel("Všechny dostupné pluginy\njsou už nainstalované.")
             empty.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-            self.encoder_layout.addWidget(empty)
+            layout.addWidget(empty)
+        for plugin in available:
+            layout.addWidget(self._build_store_row(plugin))
 
-        self.encoder_layout.addStretch()
-        self.stack.setCurrentWidget(self.encoder_page)
+        layout.addStretch()
+        self.store_scroll.setWidget(inner)
 
-    def _pick_for_encoder(self, module: dict, plugin: dict):
-        action = {
-            "icon": module["icon"],
-            "name": f"{plugin['name']} \u2013 {module['name']}",
-            "plugin_id": plugin["id"],
-            "action_id": module["id"],
-        }
-        if self._encoder_pick_callback:
-            self._encoder_pick_callback(action)
-        self.stack.setCurrentWidget(self.plugins_page)
+    def _build_store_row(self, plugin: dict) -> QFrame:
+        row = QFrame()
+        row.setStyleSheet("QFrame { background-color: #1c1c1f; border-radius: 8px; }")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(10, 8, 10, 8)
+        label = QLabel(f"{plugin['icon']}  {plugin['name']}")
+        label.setStyleSheet(f"color: {TEXT}; font-size: 12px; background: transparent; border: none;")
+        row_layout.addWidget(label)
+        row_layout.addStretch()
 
-    def _open_plugin_page(self, plugin: dict):
-        self._open_plugin = plugin
-        self._module_entries = []
+        install_btn = QPushButton("Instalovat")
+        install_btn.setCursor(Qt.PointingHandCursor)
+        install_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ORANGE}; color: white; border: none;
+                border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background-color: #e8650f; }}
+        """)
+        install_btn.clicked.connect(lambda checked=False, p=plugin: self._install_plugin(p))
+        row_layout.addWidget(install_btn)
+        return row
 
-        while self.modules_layout.count():
-            item = self.modules_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        back_container = QWidget()
-        back_layout = QHBoxLayout(back_container)
-        back_layout.setContentsMargins(0, 0, 0, 0)
-        back_btn = QPushButton(f"\u2190 {plugin['name']}")
-        back_btn.setCursor(Qt.PointingHandCursor)
-        back_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; border: none; color: {TEXT}; font-size: 13px; font-weight: 700; }}"
-        )
-        back_btn.clicked.connect(lambda: self.stack.setCurrentWidget(self.plugins_page))
-        back_layout.addWidget(back_btn)
-        back_layout.addStretch()
-        self.modules_layout.addWidget(back_container)
-
-        for module in plugin.get("modules", []):
-            item = ListItem(module["icon"], module["name"], on_click=lambda m=module: self._select_module(m))
-            self._module_entries.append((item, module))
-            self.modules_layout.addWidget(item)
-
-        self.modules_layout.addStretch()
-        self.stack.setCurrentWidget(self.modules_page)
-
-    def _select_module(self, module: dict):
-        for item, mod in self._module_entries:
-            item.set_selected(mod is module)
-        self._on_action_selected({
-            "icon": module["icon"],
-            "name": f"{self._open_plugin['name']} \u2013 {module['name']}",
-            "plugin_id": self._open_plugin["id"],
-            "action_id": module["id"],
-        })
+    def _install_plugin(self, plugin: dict):
+        plugin["installed"] = True
+        self._rebuild_actions_list()
+        self._rebuild_store_list()
+        self._switch_tab(0)

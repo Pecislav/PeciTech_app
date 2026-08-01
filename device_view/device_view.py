@@ -4,123 +4,127 @@ device_view/device_view.py
 Detail zarizeni PeciDeck - otevre se kliknutim na pripojenou dlazdici
 na hlavni obrazovce (viz main_window.py). Vlevo (~80% sirky) je lehky
 obrys desky - tlacitka jako obrys keycapu (4x2), pod tim displej, pod
-tim 3 enkodery. Vpravo (~20%) je seznam pluginu (plugins_panel.py).
+tim 3 enkodery, hned pod tim navigace stranek a konfiguracni panel.
+Vpravo (~20% sirky, cela vyska okna) je panel s kategoriemi/pluginy
+(plugins_panel.py).
 
-Prirazeni pluginu na tlacitko je zatim zjednodusene: klikni na plugin
-vpravo (zvyrazni se), pak klikni na tlacitko vlevo - plugin se na nej
-priradi (zobrazi se jeho ikonka). Pretahovani (drag & drop) by bylo
-prijemnejsi, ale az bude zbytek funkcni.
+Prirazeni (podle Elgato appky): akci PRETAHNES levym tlacitkem z praveho
+panelu na tlacitko/enkoder - cil se behem pretazeni zesvetli. Po pusteni
+se akce priradi.
 
-Odebrani prirazeni: pravy klik na tlacitko/enkoder -> "Odebrat" (stejny
-princip jako kontextove menu v Elgato appce).
+Klik na tlacitko/enkoder (bez pretahovani) ho VYBERE (modry okraj) a
+dole (jen pod levym sloupcem, ne pod celym oknem) se zobrazi
+konfiguracni panel pro tu konkretni akci - vcetne vlastniho NAZVU, ktery
+se ulozi a zobrazi pod ikonkou primo na tlacitku/enkoderu.
 
-Enkodery: klik na PRAZDNY enkoder (kdyz nic neni vybrane z beznych
-slozek) otevre v pravem panelu filtrovany seznam jen akci vhodnych pro
-otaceni (hlasitost, posun stopy...) - viz plugins_panel.py. Kliknuti na
-polozku v tomhle filtrovanem seznamu priradi rovnou tomu enkoderu.
+Odebrani prirazeni: pravy klik na tlacitko/enkoder -> "Odebrat" -> jeste
+potvrzovaci dialog, jestli to fakt chces.
+
+Testovani akci bez hardwaru: nektere akce (otevrit web/aplikaci, napsat
+text, klavesova zkratka, media tlacitka) jdou rovnou "Otestovat" primo
+z konfiguracniho panelu - spusti se doopravdy. Text/hotkey/media pouzivaji
+knihovnu `pynput` (pip install pynput) pro simulaci klaves.
 
 Pod mrizkou tlacitek je navigacni panel stranek (<, cisla, +, >) - jako
-v Elgato appce. Kazda stranka ma vlastni sadu prirazeni tlacitek; nove
-stranky zacinaji prazdne. Enkodery zatim stranky nemaji (nebylo v zadani).
+v Elgato appce, max. MAX_PAGES stranek. Kazda stranka ma vlastni sadu
+prirazeni tlacitek; nove stranky zacinaji prazdne. Enkodery zatim
+stranky nemaji.
 """
+
+import json
+import os
+import sys
+import subprocess
+import webbrowser
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame, QMenu,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
+    QMenu, QLineEdit, QSlider, QFileDialog, QMessageBox,
 )
+
+try:
+    from pynput.keyboard import Controller as _KeyboardController, Key as _Key
+    _keyboard = _KeyboardController()
+except ImportError:
+    _keyboard = None
+    _Key = None
 
 BG = "#111113"
 TEXT = "#f2f2f0"
 TEXT_MUTED = "#9a9aa0"
 ORANGE = "#ff7a29"
+BLUE_SELECTED = "#4da6ff"
 OUTLINE = "rgba(255,255,255,0.25)"
+ACTION_MIME_TYPE = "application/x-pecitech-action"
+MAX_PAGES = 20
 
-from .plugins_panel import PluginsPanel  # noqa: E402 (musi byt az po definici barev vyse)
+TESTABLE_ACTION_IDS = {
+    "open_website", "open_app", "type_text", "hotkey",
+    "media_play_pause", "media_next", "media_prev",
+}
 
+HOTKEY_NAME_MAP = {
+    "ctrl": "ctrl", "control": "ctrl",
+    "shift": "shift",
+    "alt": "alt",
+    "cmd": "cmd", "win": "cmd", "super": "cmd",
+}
 
-class Keycap(QPushButton):
-    """Jedno tlacitko PeciDecku - vzhled jako obrys keycapu, klik = prirazeni vybraneho pluginu."""
-
-    def __init__(self, index: int):
-        super().__init__(str(index + 1))
-        self.index = index
-        self.assigned = None
-        self.on_remove = None  # nastavi DeviceDetailPage
-        self.setFixedSize(80, 80)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
-        self._apply_style()
-
-    def assign(self, plugin: dict):
-        self.assigned = plugin
-        self._apply_style()
-        self.setToolTip(plugin["name"])
-
-    def clear(self):
-        self.assigned = None
-        self._apply_style()
-        self.setToolTip("")
-
-    def _show_context_menu(self, pos):
-        if self.assigned is None:
-            return
-        menu = QMenu(self)
-        remove_action = menu.addAction("Odebrat")
-        chosen = menu.exec(self.mapToGlobal(pos))
-        if chosen == remove_action:
-            self.clear()
-            if self.on_remove:
-                self.on_remove()
-
-    def _apply_style(self):
-        border = ORANGE if self.assigned else OUTLINE
-        text_color = TEXT if self.assigned else TEXT_MUTED
-        self.setText(self.assigned["icon"] if self.assigned else str(self.index + 1))
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: 1.5px solid {border};
-                border-radius: 12px;
-                color: {text_color};
-                font-size: 20px;
-            }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,0.04); }}
-        """)
+from .plugins_panel import PluginsPanel  # noqa: E402 (musi byt az po definici konstant vyse)
 
 
-class EncoderDial(QFrame):
-    """Jeden enkoder - kolecko, klik = prirazeni vybrane akce (stejny princip jako Keycap)."""
+class Keycap(QFrame):
+    """Jedno tlacitko PeciDecku - obrys keycapu. Cil pro pretazeni akce, klik = vyber."""
 
     def __init__(self, index: int):
         super().__init__()
         self.index = index
         self.assigned = None
-        self.on_click = None  # nastavi DeviceDetailPage po vytvoreni
-        self.on_remove = None
-        self.setFixedSize(70, 70)
+        self.selected = False
+        self.on_click = None     # nastavi DeviceDetailPage
+        self.on_remove = None    # nastavi DeviceDetailPage
+        self.on_dropped = None   # nastavi DeviceDetailPage - zavola se po uspesnem pretazeni
+        self._drag_hover = False
+        self.setFixedSize(80, 80)
         self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptDrops(True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        self._label = QLabel()
-        self._label.setAlignment(Qt.AlignCenter)
-        self._label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        layout.addWidget(self._label)
+        layout.setContentsMargins(4, 6, 4, 6)
+        layout.setSpacing(2)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.icon_label = QLabel(str(index + 1))
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        self.title_label = QLabel("")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.title_label.setVisible(False)
+
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.title_label)
 
         self._apply_style()
 
     def assign(self, action: dict):
         self.assigned = action
         self._apply_style()
-        self.setToolTip(action["name"])
+        self.setToolTip(action.get("title") or action["name"])
 
     def clear(self):
         self.assigned = None
         self._apply_style()
         self.setToolTip("")
+
+    def set_selected(self, selected: bool):
+        self.selected = selected
+        self._apply_style()
 
     def _show_context_menu(self, pos):
         if self.assigned is None:
@@ -129,28 +133,202 @@ class EncoderDial(QFrame):
         remove_action = menu.addAction("Odebrat")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen == remove_action:
+            self._confirm_and_remove()
+
+    def _confirm_and_remove(self):
+        answer = QMessageBox.question(
+            self, "Odebrat akci",
+            f"Opravdu chceš odebrat přiřazenou akci z tlačítka {self.index + 1}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
             self.clear()
             if self.on_remove:
                 self.on_remove()
 
-    def _apply_style(self):
-        border = ORANGE if self.assigned else OUTLINE
-        text_color = TEXT if self.assigned else TEXT_MUTED
-        text = self.assigned["icon"] if self.assigned else f"E{self.index + 1}"
-        self._label.setText(text)
-        self._label.setStyleSheet(f"color: {text_color}; font-size: 16px; border: none; background: transparent;")
-        self.setStyleSheet(f"""
-            QFrame {{ background-color: transparent; border: 1.5px solid {border}; border-radius: 35px; }}
-        """)
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            event.acceptProposedAction()
+            self._drag_hover = True
+            self._apply_style()
+
+    def dragLeaveEvent(self, event):
+        self._drag_hover = False
+        self._apply_style()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            raw = bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode("utf-8")
+            self.assign(json.loads(raw))
+            event.acceptProposedAction()
+            if self.on_dropped:
+                self.on_dropped()
+        self._drag_hover = False
+        self._apply_style()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.on_click:
             self.on_click(self)
         super().mousePressEvent(event)
 
+    def _apply_style(self):
+        if self.selected:
+            border = BLUE_SELECTED
+        elif self.assigned:
+            border = ORANGE
+        else:
+            border = OUTLINE
+        bg = "rgba(255,255,255,0.10)" if self._drag_hover else "transparent"
+        text_color = TEXT if self.assigned else TEXT_MUTED
+
+        if self.assigned:
+            self.icon_label.setText(self.assigned["icon"])
+            title = (self.assigned.get("title") or "").strip()
+            self.title_label.setText(title)
+            self.title_label.setVisible(bool(title))
+        else:
+            self.icon_label.setText(str(self.index + 1))
+            self.title_label.setText("")
+            self.title_label.setVisible(False)
+
+        self.icon_label.setStyleSheet(f"color: {text_color}; font-size: 20px; background: transparent; border: none;")
+        self.title_label.setStyleSheet(f"color: {text_color}; font-size: 9px; background: transparent; border: none;")
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg};
+                border: 1.5px solid {border};
+                border-radius: 12px;
+            }}
+        """)
+
+
+class EncoderDial(QFrame):
+    """Jeden enkoder - kolecko. Stejny princip jako Keycap (pretazeni = prirazeni, klik = vyber)."""
+
+    def __init__(self, index: int):
+        super().__init__()
+        self.index = index
+        self.assigned = None
+        self.selected = False
+        self.on_click = None    # nastavi DeviceDetailPage
+        self.on_remove = None
+        self.on_dropped = None
+        self._drag_hover = False
+        self.setFixedSize(70, 70)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptDrops(True)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(0)
+        self.icon_label = QLabel()
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.title_label = QLabel("")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.title_label.setVisible(False)
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.title_label)
+
+        self._apply_style()
+
+    def assign(self, action: dict):
+        self.assigned = action
+        self._apply_style()
+        self.setToolTip(action.get("title") or action["name"])
+
+    def clear(self):
+        self.assigned = None
+        self._apply_style()
+        self.setToolTip("")
+
+    def set_selected(self, selected: bool):
+        self.selected = selected
+        self._apply_style()
+
+    def _show_context_menu(self, pos):
+        if self.assigned is None:
+            return
+        menu = QMenu(self)
+        remove_action = menu.addAction("Odebrat")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen == remove_action:
+            self._confirm_and_remove()
+
+    def _confirm_and_remove(self):
+        answer = QMessageBox.question(
+            self, "Odebrat akci",
+            f"Opravdu chceš odebrat přiřazenou akci z enkodéru {self.index + 1}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self.clear()
+            if self.on_remove:
+                self.on_remove()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            event.acceptProposedAction()
+            self._drag_hover = True
+            self._apply_style()
+
+    def dragLeaveEvent(self, event):
+        self._drag_hover = False
+        self._apply_style()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            raw = bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode("utf-8")
+            self.assign(json.loads(raw))
+            event.acceptProposedAction()
+            if self.on_dropped:
+                self.on_dropped()
+        self._drag_hover = False
+        self._apply_style()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.on_click:
+            self.on_click(self)
+        super().mousePressEvent(event)
+
+    def _apply_style(self):
+        if self.selected:
+            border = BLUE_SELECTED
+        elif self.assigned:
+            border = ORANGE
+        else:
+            border = OUTLINE
+        bg = "rgba(255,255,255,0.10)" if self._drag_hover else "transparent"
+        text_color = TEXT if self.assigned else TEXT_MUTED
+
+        if self.assigned:
+            self.icon_label.setText(self.assigned["icon"])
+            title = (self.assigned.get("title") or "").strip()
+            self.title_label.setText(title)
+            self.title_label.setVisible(bool(title))
+        else:
+            self.icon_label.setText(f"E{self.index + 1}")
+            self.title_label.setText("")
+            self.title_label.setVisible(False)
+
+        self.icon_label.setStyleSheet(f"color: {text_color}; font-size: 15px; border: none; background: transparent;")
+        self.title_label.setStyleSheet(f"color: {text_color}; font-size: 8px; border: none; background: transparent;")
+        self.setStyleSheet(f"""
+            QFrame {{ background-color: {bg}; border: 1.5px solid {border}; border-radius: 35px; }}
+        """)
+
 
 class DeviceOutline(QWidget):
-    """Leva cast (~80%) - obrys PeciDecku: 4x2 tlacitka, displej, 3 enkodery."""
+    """
+    Obrys PeciDecku: 4x2 tlacitka, displej, 3 enkodery. Prirozena vyska
+    podle obsahu (zadny vlastni "stretch"), aby navigace stranek hned
+    pod tim navazovala bez velke mezery.
+    """
 
     def __init__(self):
         super().__init__()
@@ -188,21 +366,15 @@ class DeviceOutline(QWidget):
             encoders_row.addWidget(enc)
         encoders_row.addStretch()
 
-        layout.addStretch()
         layout.addWidget(grid_wrap, alignment=Qt.AlignCenter)
         layout.addWidget(display, alignment=Qt.AlignCenter)
         layout.addLayout(encoders_row)
-        layout.addStretch()
-
-    def assign_to_button(self, index: int, plugin: dict):
-        self.keycaps[index].assign(plugin)
 
 
 class PageNavBar(QWidget):
     """
     Navigacni panel pod mrizkou tlacitek: <, cisla stranek (1,2,3...), +, >.
-    Stejny princip jako v Elgato appce - klik na cislo NEBO na sipku prepne
-    aktivni stranku; "+" prida novou (prazdnou) stranku.
+    "+" se deaktivuje po dosazeni MAX_PAGES stranek.
     """
 
     def __init__(self, on_page_selected, on_add_page):
@@ -242,6 +414,7 @@ class PageNavBar(QWidget):
                 border-radius: 14px; color: {TEXT_MUTED}; font-size: 14px;
             }}
             QPushButton:hover {{ background-color: rgba(255,255,255,0.06); }}
+            QPushButton:disabled {{ color: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.06); }}
         """)
         self.add_btn.clicked.connect(self._on_add_page)
 
@@ -269,6 +442,7 @@ class PageNavBar(QWidget):
             self._page_buttons.append(btn)
             self._pills_layout.addWidget(btn)
 
+        self.add_btn.setEnabled(count < MAX_PAGES)
         self.set_active(min(self._current_index, count - 1))
 
     def set_active(self, index: int):
@@ -290,14 +464,244 @@ class PageNavBar(QWidget):
         self.next_btn.setEnabled(index < len(self._page_buttons) - 1)
 
 
+class ConfigPanel(QWidget):
+    """
+    Panel s nastavenim vybrane akce - jen pod levym sloupcem. Umoznuje
+    zadat vlastni Nazev (uklada se a zobrazuje pod ikonkou primo na
+    tlacitku/enkoderu), pripadne dalsi pole podle typu akce (URL, cesta
+    k aplikaci, text, klavesova zkratka...), a tlacitko Otestovat pro
+    akce, ktere jdou spustit primo ze softwaru (bez hardwaru).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._current_target = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 14, 24, 14)
+        root.setSpacing(10)
+
+        self.header_label = QLabel("Vyber tlačítko nebo enkodér")
+        self.header_label.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 700;")
+        root.addWidget(self.header_label)
+
+        self.fields_layout = QVBoxLayout()
+        self.fields_layout.setSpacing(8)
+        root.addLayout(self.fields_layout)
+
+        self.setStyleSheet(f"background-color: {BG}; border-top: 1px solid rgba(255,255,255,0.08);")
+        self.setMinimumHeight(80)
+
+    def show_for(self, target):
+        """target = Keycap nebo EncoderDial (ma atribut .assigned)."""
+        self._current_target = target
+        self._clear_fields()
+
+        if target is None or target.assigned is None:
+            self.header_label.setText("Prázdné – přetáhni sem akci z pravého panelu")
+            return
+
+        action = target.assigned
+        self.header_label.setText(action.get("title") or action["name"])
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._muted_label("Název:"))
+        title_edit = self._styled_line_edit(action.get("title", ""), action["name"])
+        title_edit.editingFinished.connect(lambda a=action, e=title_edit, t=target: self._save_title(a, e, t))
+        title_row.addWidget(title_edit)
+        self.fields_layout.addLayout(title_row)
+
+        input_type = action.get("input_type")
+
+        if input_type == "url":
+            row = QHBoxLayout()
+            row.addWidget(self._muted_label("URL:"))
+            url_edit = self._styled_line_edit(action.get("value", ""), "https://…")
+            url_edit.editingFinished.connect(lambda a=action, e=url_edit: a.update({"value": e.text()}))
+            row.addWidget(url_edit)
+            self.fields_layout.addLayout(row)
+
+        elif input_type == "path":
+            row = QHBoxLayout()
+            row.addWidget(self._muted_label("Cesta:"))
+            path_edit = self._styled_line_edit(action.get("value", ""), "Cesta k aplikaci")
+            path_edit.editingFinished.connect(lambda a=action, e=path_edit: a.update({"value": e.text()}))
+            row.addWidget(path_edit)
+            browse_btn = QPushButton("Procházet…")
+            browse_btn.setCursor(Qt.PointingHandCursor)
+            browse_btn.clicked.connect(lambda a=action, e=path_edit: self._browse_for_path(a, e))
+            row.addWidget(browse_btn)
+            self.fields_layout.addLayout(row)
+
+        elif input_type == "text":
+            row = QHBoxLayout()
+            row.addWidget(self._muted_label("Text:"))
+            text_edit = self._styled_line_edit(action.get("value", ""), "Text k napsání")
+            text_edit.editingFinished.connect(lambda a=action, e=text_edit: a.update({"value": e.text()}))
+            row.addWidget(text_edit)
+            self.fields_layout.addLayout(row)
+
+        elif input_type == "hotkey":
+            row = QHBoxLayout()
+            row.addWidget(self._muted_label("Zkratka:"))
+            hotkey_edit = self._styled_line_edit(action.get("value", ""), "např. ctrl+shift+s")
+            hotkey_edit.editingFinished.connect(lambda a=action, e=hotkey_edit: a.update({"value": e.text()}))
+            row.addWidget(hotkey_edit)
+            self.fields_layout.addLayout(row)
+
+        elif action.get("has_amount"):
+            amount_row = QHBoxLayout()
+            lo = QLabel("0")
+            lo.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+            hi = QLabel("100")
+            hi.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(0, 100)
+            slider.setValue(50)
+            amount_row.addWidget(lo)
+            amount_row.addWidget(slider)
+            amount_row.addWidget(hi)
+            self.fields_layout.addLayout(amount_row)
+
+        if action.get("action_id") in TESTABLE_ACTION_IDS:
+            self._add_test_row(action)
+
+    def _save_title(self, action: dict, edit: QLineEdit, target):
+        action["title"] = edit.text().strip()
+        target.assign(action)  # prekresli ikonku/nazev na samotnem tlacitku/enkoderu
+        self.header_label.setText(action.get("title") or action["name"])
+
+    def _muted_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+        return label
+
+    def _styled_line_edit(self, value: str, placeholder: str) -> QLineEdit:
+        edit = QLineEdit(value)
+        edit.setPlaceholderText(placeholder)
+        edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: #1c1c1f; border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 6px; padding: 4px 8px; color: {TEXT}; font-size: 12px;
+            }}
+        """)
+        return edit
+
+    def _add_test_row(self, action: dict):
+        row = QHBoxLayout()
+        row.addStretch()
+        test_btn = QPushButton("Otestovat")
+        test_btn.setCursor(Qt.PointingHandCursor)
+        test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ORANGE}; color: white; border: none;
+                border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background-color: #e8650f; }}
+        """)
+        test_btn.clicked.connect(lambda checked=False, a=action: self._run_action(a))
+        row.addWidget(test_btn)
+        self.fields_layout.addLayout(row)
+
+    def _clear_fields(self):
+        while self.fields_layout.count():
+            item = self.fields_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                sub = item.layout()
+                while sub.count():
+                    sub_item = sub.takeAt(0)
+                    if sub_item.widget():
+                        sub_item.widget().deleteLater()
+
+    def _browse_for_path(self, action: dict, edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(self, "Vyber aplikaci")
+        if path:
+            edit.setText(path)
+            action["value"] = path
+
+    def _run_action(self, action: dict):
+        # Bez hardwaru zatim takhle rucne overujeme, ze akce doopravdy neco dela.
+        action_id = action.get("action_id")
+        value = (action.get("value") or "").strip()
+
+        if action_id == "open_website":
+            if value:
+                webbrowser.open(value)
+
+        elif action_id == "open_app":
+            if not value:
+                return
+            try:
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", value])
+                elif sys.platform.startswith("win"):
+                    os.startfile(value)  # noqa: only reached on Windows
+                else:
+                    subprocess.Popen([value])
+            except Exception:
+                pass
+
+        elif action_id in ("type_text", "hotkey", "media_play_pause", "media_next", "media_prev"):
+            if _keyboard is None:
+                QMessageBox.warning(
+                    self, "Chybí knihovna",
+                    "Pro tuhle akci je potřeba nainstalovat knihovnu 'pynput':\n\npip install pynput",
+                )
+                return
+            if action_id == "type_text":
+                if value:
+                    _keyboard.type(value)
+            elif action_id == "hotkey":
+                if value:
+                    self._press_hotkey(value)
+            elif action_id == "media_play_pause":
+                self._tap_key(_Key.media_play_pause)
+            elif action_id == "media_next":
+                self._tap_key(_Key.media_next)
+            elif action_id == "media_prev":
+                self._tap_key(_Key.media_previous)
+
+    def _tap_key(self, key):
+        _keyboard.press(key)
+        _keyboard.release(key)
+
+    def _press_hotkey(self, combo: str):
+        parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
+        if not parts:
+            return
+        modifiers = []
+        final_key = None
+        for p in parts:
+            if p in HOTKEY_NAME_MAP:
+                modifiers.append(getattr(_Key, HOTKEY_NAME_MAP[p]))
+            else:
+                final_key = p
+
+        for m in modifiers:
+            _keyboard.press(m)
+        if final_key:
+            if len(final_key) == 1:
+                _keyboard.press(final_key)
+                _keyboard.release(final_key)
+            else:
+                special = getattr(_Key, final_key, None)
+                if special:
+                    _keyboard.press(special)
+                    _keyboard.release(special)
+        for m in reversed(modifiers):
+            _keyboard.release(m)
+
+
 class DeviceDetailPage(QWidget):
     back_requested = Signal()
 
     def __init__(self):
         super().__init__()
-        self.selected_action = None
         self.pages = [self._blank_page()]
         self.current_page_index = 0
+        self._selected_target = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -324,22 +728,39 @@ class DeviceDetailPage(QWidget):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
-        self.outline = DeviceOutline()
-        self.plugins_panel = PluginsPanel(on_action_selected=self._on_action_selected)
+        # --- levy sloupec (~80 %): obrys + navigace stranek + konfiguracni panel, zarovnano nahoru ---
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 24, 0, 0)
+        left_layout.setSpacing(0)
+        left_layout.setAlignment(Qt.AlignTop)
 
-        body.addWidget(self.outline, stretch=4)   # ~80 %
-        body.addWidget(self.plugins_panel, stretch=1)  # ~20 %
-        root.addLayout(body)
+        self.outline = DeviceOutline()
+        left_layout.addWidget(self.outline, alignment=Qt.AlignHCenter)
 
         self.page_nav = PageNavBar(on_page_selected=self._go_to_page, on_add_page=self._add_page)
-        root.addWidget(self.page_nav)
+        left_layout.addWidget(self.page_nav)
+
+        self.config_panel = ConfigPanel()
+        left_layout.addWidget(self.config_panel)
+
+        left_layout.addStretch()
+
+        # --- pravy sloupec (~20 %, cela vyska) ---
+        self.plugins_panel = PluginsPanel()
+
+        body.addWidget(left_container, stretch=4)
+        body.addWidget(self.plugins_panel, stretch=1)
+        root.addLayout(body)
 
         for key in self.outline.keycaps:
-            key.clicked.connect(lambda checked=False, k=key: self._on_keycap_clicked(k))
-            key.on_remove = lambda k=key: self._on_keycap_removed(k)
+            key.on_click = self._select_target
+            key.on_remove = lambda k=key: self._on_target_removed(k)
+            key.on_dropped = lambda k=key: self._on_keycap_dropped(k)
         for enc in self.outline.encoders:
-            enc.on_click = self._on_encoder_clicked
-            enc.on_remove = lambda e=enc: self._on_encoder_removed(e)
+            enc.on_click = self._select_target
+            enc.on_remove = lambda e=enc: self._on_target_removed(e)
+            enc.on_dropped = lambda e=enc: self._select_target(e)
 
         self.setStyleSheet(f"background-color: {BG};")
 
@@ -349,30 +770,22 @@ class DeviceDetailPage(QWidget):
     def set_device_name(self, name: str):
         self.title_label.setText(name)
 
-    def _on_action_selected(self, action: dict):
-        self.selected_action = action
+    def _select_target(self, target):
+        if self._selected_target is not None and self._selected_target is not target:
+            self._selected_target.set_selected(False)
+        self._selected_target = target
+        target.set_selected(True)
+        self.config_panel.show_for(target)
 
-    def _on_keycap_clicked(self, keycap: Keycap):
-        # Odebrani uz jde jen pravym klikem -> "Odebrat" (viz Keycap._show_context_menu),
-        # aby nedoslo k nechtenemu smazani obycejnym kliknutim.
-        if self.selected_action is not None:
-            keycap.assign(self.selected_action)
-            self.pages[self.current_page_index][keycap.index] = self.selected_action
+    def _on_keycap_dropped(self, keycap: Keycap):
+        self.pages[self.current_page_index][keycap.index] = keycap.assigned
+        self._select_target(keycap)
 
-    def _on_keycap_removed(self, keycap: Keycap):
-        self.pages[self.current_page_index][keycap.index] = None
-
-    def _on_encoder_clicked(self, encoder: EncoderDial):
-        # Enkodery zatim nejsou soucasti stranek (globalni pro cele zarizeni) - viz poznamka v modulovem docstringu.
-        if self.selected_action is not None:
-            encoder.assign(self.selected_action)
-        elif encoder.assigned is None:
-            # Prazdny enkoder + nic vybrane z beznych slozek -> rovnou nabidnout jen akce vhodne pro otaceni.
-            self.plugins_panel.show_encoder_suggestions(on_pick=lambda action, e=encoder: e.assign(action))
-        # Uz prirazeny enkoder + klik bez vybrane akce -> nic (odebrani je pravym klikem).
-
-    def _on_encoder_removed(self, encoder: EncoderDial):
-        pass  # enkodery nejsou v self.pages, encoder.clear() uz vizualne zresetoval stav
+    def _on_target_removed(self, target):
+        if isinstance(target, Keycap):
+            self.pages[self.current_page_index][target.index] = None
+        if self._selected_target is target:
+            self.config_panel.show_for(target)
 
     def _go_to_page(self, index: int):
         if index < 0 or index >= len(self.pages):
@@ -386,8 +799,12 @@ class DeviceDetailPage(QWidget):
             else:
                 key.clear()
         self.page_nav.set_active(index)
+        if self._selected_target in self.outline.keycaps:
+            self.config_panel.show_for(self._selected_target)
 
     def _add_page(self):
+        if len(self.pages) >= MAX_PAGES:
+            return
         self.pages.append(self._blank_page())
         self.page_nav.set_page_count(len(self.pages))
         self._go_to_page(len(self.pages) - 1)
