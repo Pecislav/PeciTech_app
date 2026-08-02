@@ -23,7 +23,9 @@ potvrzovaci dialog, jestli to fakt chces.
 Testovani akci bez hardwaru: nektere akce (otevrit web/aplikaci, napsat
 text, klavesova zkratka, media tlacitka) jdou rovnou "Otestovat" primo
 z konfiguracniho panelu - spusti se doopravdy. Text/hotkey/media pouzivaji
-knihovnu `pynput` (pip install pynput) pro simulaci klaves.
+knihovnu `pynput` (pip install pynput). Akce ze skutecnych stazenych
+pluginu (plugins/) se testuji stejne, jen se spusteni deleguje na
+plugin_loader.run_plugin_action() - viz plugin_loader.py.
 
 Pod mrizkou tlacitek je navigacni panel stranek (<, cisla, +, >) - jako
 v Elgato appce, max. MAX_PAGES stranek. Kazda stranka ma vlastni sadu
@@ -50,6 +52,8 @@ except ImportError:
     _keyboard = None
     _Key = None
 
+from . import plugin_loader
+
 BG = "#111113"
 TEXT = "#f2f2f0"
 TEXT_MUTED = "#9a9aa0"
@@ -58,11 +62,6 @@ BLUE_SELECTED = "#4da6ff"
 OUTLINE = "rgba(255,255,255,0.25)"
 ACTION_MIME_TYPE = "application/x-pecitech-action"
 MAX_PAGES = 20
-
-TESTABLE_ACTION_IDS = {
-    "open_website", "open_app", "type_text", "hotkey",
-    "media_play_pause", "media_next", "media_prev",
-}
 
 HOTKEY_NAME_MAP = {
     "ctrl": "ctrl", "control": "ctrl",
@@ -563,7 +562,7 @@ class ConfigPanel(QWidget):
             amount_row.addWidget(hi)
             self.fields_layout.addLayout(amount_row)
 
-        if action.get("action_id") in TESTABLE_ACTION_IDS:
+        if action.get("plugin_id") != "navigation":
             self._add_test_row(action)
 
     def _save_title(self, action: dict, edit: QLineEdit, target):
@@ -624,8 +623,20 @@ class ConfigPanel(QWidget):
     def _run_action(self, action: dict):
         # Bez hardwaru zatim takhle rucne overujeme, ze akce doopravdy neco dela.
         action_id = action.get("action_id")
+        plugin_id = action.get("plugin_id")
         value = (action.get("value") or "").strip()
 
+        if plugin_id == "system":
+            self._run_system_action(action_id, value)
+        elif plugin_id == "navigation":
+            return  # nema smysl "testovat" - viz page nav bar
+        else:
+            # skutecny plugin nacteny ze slozky plugins/ (viz plugin_loader.py)
+            ok, error = plugin_loader.run_plugin_action(plugin_id, action_id, value)
+            if not ok:
+                QMessageBox.warning(self, "Chyba pluginu", error or "Akci se nepodařilo spustit.")
+
+    def _run_system_action(self, action_id: str, value: str):
         if action_id == "open_website":
             if value:
                 webbrowser.open(value)
