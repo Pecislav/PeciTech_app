@@ -20,6 +20,17 @@ architektury, kterou jsi navrhl:
      zacina podtrzitkem, takze se needetekuje jako "nainstalovana" -
      je to jen referencni ukazka formatu).
 
+  5. VOLITELNE - pokud plugin potrebuje vlastni nastaveni (heslo, port...),
+     muze navic definovat:
+       SETTINGS = [ {"id", "name", "input_type" ("text"/"password"), "default"}, ... ]
+       def get_settings() -> dict: ...
+       def save_settings(values: dict) -> None: ...
+       def test_connection() -> tuple[bool, str]: ...
+     Kdyz run() narazi na problem, ktery jde vyresit jen tak, ze uzivatel
+     neco nastavi (spatne heslo apod.), vyhod RuntimeError se zpravou
+     zacinajici "NEEDS_SETTINGS:" - appka pak misto obycejne chybove
+     hlasky rovnou otevre dialog s nastavenim (viz plugins/obs/plugin.py).
+
 BEZPECNOST: tohle spousti kod stazeny z internetu bez sandboxu a bez
 overeni puvodu/podpisu. Pro vyvoj/prototyp je to v poradku, ale pred
 realnym vydanim produktu by stalo za to aspon overovat, ze zip pochazi
@@ -42,31 +53,16 @@ from pathlib import Path
 PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
 
 # --- "Obchod": co jde stahnout, nez je nainstalovane ---
-# zip_url jsou zatim placeholdery - nahrad je realnymi GitHub adresami.
+# Zatim jen OBS - az bude hotovy a fakt funkcni, pridame dalsi stejnym zpusobem.
 STORE_CATALOG = [
     {
         "id": "obs", "name": "OBS Studio", "icon": "\U0001F3A5",
         "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-obs/archive/refs/heads/main.zip",
     },
-    {
-        "id": "spotify", "name": "Spotify", "icon": "\U0001F3B5",
-        "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-spotify/archive/refs/heads/main.zip",
-    },
-    {
-        "id": "discord", "name": "Discord", "icon": "\U0001F4AC",
-        "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-discord/archive/refs/heads/main.zip",
-    },
-    {
-        "id": "volume", "name": "Hlasitost", "icon": "\U0001F50A",
-        "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-volume/archive/refs/heads/main.zip",
-    },
-    {
-        "id": "twitch", "name": "Twitch", "icon": "\U0001F4FA",
-        "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-twitch/archive/refs/heads/main.zip",
-    },
 ]
 
-# plugin_id -> run(action_id, value) callable, naplni ho load_installed_plugins()
+# plugin_id -> nacteny modul (pristup k run/get_settings/save_settings/test_connection),
+# naplni ho load_installed_plugins()
 _RUNTIME_REGISTRY = {}
 
 
@@ -133,10 +129,10 @@ def load_installed_plugins() -> list:
             info = getattr(module, "PLUGIN_INFO", {})
             plugin_id = info.get("id", folder.name)
             actions = getattr(module, "ACTIONS", [])
-            run_fn = getattr(module, "run", None)
+            settings_schema = getattr(module, "SETTINGS", [])
 
-            if run_fn is not None:
-                _RUNTIME_REGISTRY[plugin_id] = run_fn
+            if getattr(module, "run", None) is not None:
+                _RUNTIME_REGISTRY[plugin_id] = module
 
             plugins.append({
                 "id": plugin_id,
@@ -144,6 +140,7 @@ def load_installed_plugins() -> list:
                 "icon": info.get("icon", "\U0001F9E9"),
                 "installed": True,
                 "modules": actions,
+                "has_settings": bool(settings_schema),
             })
         except Exception as exc:
             print(f"[PeciTech] Nepodařilo se načíst plugin '{folder.name}': {exc}")
@@ -151,13 +148,27 @@ def load_installed_plugins() -> list:
     return plugins
 
 
+def get_plugin_module(plugin_id: str):
+    """Vrati nacteny modul pluginu (pro pristup k get_settings/save_settings/test_connection), nebo None."""
+    return _RUNTIME_REGISTRY.get(plugin_id)
+
+
 def run_plugin_action(plugin_id: str, action_id: str, value: str = ""):
-    """Zavola run() nactenho pluginu. Vraci (uspech: bool, chyba: str)."""
-    run_fn = _RUNTIME_REGISTRY.get(plugin_id)
-    if run_fn is None:
-        return False, f"Plugin '{plugin_id}' není načtený (zkus appku restartovat po instalaci)."
+    """
+    Zavola run() nacteneho pluginu. Vraci (uspech: bool, chyba: str, potrebuje_nastaveni: bool).
+    Plugin muze rict "potrebuju nastaveni od uzivatele" tak, ze vyhodi
+    RuntimeError, jehoz zprava zacina "NEEDS_SETTINGS:" (viz plugins/obs/plugin.py) -
+    appka pak misto obycejne chybove hlasky rovnou otevre dialog s nastavenim pluginu.
+    """
+    module = _RUNTIME_REGISTRY.get(plugin_id)
+    if module is None:
+        return False, f"Plugin '{plugin_id}' není načtený (zkus appku restartovat po instalaci).", False
     try:
-        run_fn(action_id, value)
-        return True, ""
+        module.run(action_id, value)
+        return True, "", False
     except Exception as exc:
-        return False, str(exc)
+        message = str(exc)
+        needs_settings = message.startswith("NEEDS_SETTINGS:")
+        if needs_settings:
+            message = message[len("NEEDS_SETTINGS:"):].strip()
+        return False, message, needs_settings

@@ -4,32 +4,18 @@ device_view/plugins_panel.py
 Prava cast (~20 % sirky, cela vyska okna) obrazovky detailu zarizeni.
 
 Nahore jsou dve zalozky:
-  - "Akce"   - kategorie/pluginy, ktere uz mas "nainstalovane" (puvodni
-               rozbalovaci seznam - klik na hlavicku kategorie ji
-               rozbali/sbali na miste, presne jako v Elgato appce).
-               Konkretni akce uvnitr jsou PRETAHNUTELNE (drag & drop)
-               na tlacitko/enkoder v obrysu PeciDecku vlevo.
-  - "Obchod" - pluginy, ktere jeste nemas stazene, s tlacitkem
-               "Instalovat" u kazdeho - po instalaci se presune do "Akce".
-               (Skutecne stahovani/instalace z internetu je vetsi
-               samostatna funkce na priste - tohle je zatim prepinac
-               mezi "co uz mam" a "co si jeste muzu stahnout", presne
-               jak jsi chtel.)
+  - "Akce"   - BUILTIN_PLUGINS (Navigace, Systém - vzdy dostupne, soucast
+               appky samotne) + vsechny SKUTECNE NAINSTALOVANE pluginy
+               nactene ze slozky plugins/ (viz plugin_loader.py).
+  - "Obchod" - plugin_loader.STORE_CATALOG minus to, co uz je
+               nainstalovane. Klik na "Instalovat" stahne .zip z GitHubu
+               a rozbali ho do plugins/<id>/ - viz plugin_loader.py pro
+               presny mechanismus.
 
-"Navigace" a "Systém" jsou specialni vestavene kategorie (vzdy dostupne,
-"installed": True, "builtin": True) - obsahuji zakladni funkce appky
-samotne (stranky, otevirani veci, text/klavesy/media), nejsou to
-stahovatelne pluginy.
-
-Vsechny ostatni (OBS, Spotify, Discord, Hlasitost, Twitch) ted START­UJI
-jako "installed": False - objevi se nejdriv v zalozce "Obchod", teprve
-po kliknuti na "Instalovat" se presunou do "Akce". Tohle je zamerne -
-odpovida to realnemu workflow (nejdriv stahnout plugin, pak ho pouzivat),
-misto aby byly predem nainstalovane vsechny naraz.
-
-"Hlasitost" ma jen jednu polozku "Nastavit hlasitost" s "has_amount":
-True - v konfiguracnim panelu dole (device_view.py) se pak misto dvou
-oddelenych "zvysit/snizit" zobrazi jeden posuvnik 0-100.
+Kategorie se rozbaluji NA MISTE (accordion), presne jako v Elgato appce:
+klik na hlavicku kategorie ji rozbali/sbali, beze zmeny stranky.
+Konkretni akce uvnitr jsou PRETAHNUTELNE (drag & drop) na tlacitko/
+enkoder v obrysu PeciDecku vlevo - viz device_view.py.
 """
 
 import json
@@ -38,12 +24,15 @@ from PySide6.QtCore import Qt, QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QScrollArea, QApplication, QStackedWidget,
+    QScrollArea, QApplication, QStackedWidget, QMessageBox, QDialog, QLineEdit,
 )
 
+from . import plugin_loader
 from .device_view import BG, TEXT, TEXT_MUTED, ORANGE, ACTION_MIME_TYPE
 
-PLUGINS = [
+# Vestavene kategorie - soucast appky samotne, vzdy dostupne v "Akce"
+# (nejsou to stahovatelne pluginy, proto nejsou v plugin_loader.STORE_CATALOG).
+BUILTIN_PLUGINS = [
     {
         "id": "navigation", "name": "Navigace", "icon": "\U0001F9ED", "installed": True, "builtin": True,
         "modules": [
@@ -61,50 +50,6 @@ PLUGINS = [
             {"id": "media_play_pause", "name": "Média: Přehrát/Pauza", "icon": "\u23EF"},
             {"id": "media_next", "name": "Média: Další", "icon": "\u23ED"},
             {"id": "media_prev", "name": "Média: Předchozí", "icon": "\u23EE"},
-        ],
-    },
-    {
-        "id": "obs", "name": "OBS Studio", "icon": "\U0001F3A5", "installed": False,
-        "modules": [
-            {"id": "start_stream", "name": "Spustit stream", "icon": "\U0001F534"},
-            {"id": "stop_stream", "name": "Zastavit stream", "icon": "\u23F9"},
-            {"id": "switch_scene", "name": "Přepnout scénu", "icon": "\U0001F3AC"},
-            {"id": "mute_mic", "name": "Ztlumit mikrofon", "icon": "\U0001F507"},
-        ],
-    },
-    {
-        "id": "spotify", "name": "Spotify", "icon": "\U0001F3B5", "installed": False,
-        "modules": [
-            {"id": "play_pause", "name": "Play / Pauza", "icon": "\u23EF"},
-            {"id": "next_track", "name": "Další skladba", "icon": "\u23ED"},
-            {"id": "prev_track", "name": "Předchozí skladba", "icon": "\u23EE"},
-        ],
-    },
-    {
-        "id": "discord", "name": "Discord", "icon": "\U0001F4AC", "installed": False,
-        "modules": [
-            {"id": "toggle_mute", "name": "Mute / Unmute", "icon": "\U0001F3A4"},
-            {"id": "toggle_deafen", "name": "Deafen", "icon": "\U0001F3A7"},
-        ],
-    },
-    {
-        "id": "volume", "name": "Hlasitost", "icon": "\U0001F50A", "installed": False,
-        "modules": [
-            {"id": "set_volume", "name": "Nastavit hlasitost", "icon": "\U0001F50A", "has_amount": True},
-            {"id": "vol_mute", "name": "Ztlumit", "icon": "\U0001F507"},
-        ],
-    },
-    {
-        "id": "twitch", "name": "Twitch", "icon": "\U0001F4FA", "installed": False,
-        "modules": [
-            {"id": "marker", "name": "Přidat marker", "icon": "\U0001F4CD"},
-        ],
-    },
-    {
-        # Priklad pluginu, co jeste NENI nainstalovany - ukazuje se v zalozce "Obchod".
-        "id": "philips_hue", "name": "Philips Hue", "icon": "\U0001F4A1", "installed": False,
-        "modules": [
-            {"id": "toggle_lights", "name": "Zapnout/vypnout světla", "icon": "\U0001F4A1"},
         ],
     },
 ]
@@ -159,7 +104,7 @@ class DraggableModuleItem(QFrame):
 class CategorySection(QWidget):
     """Rozbalovaci kategorie (slozka) - klik na hlavicku ji rozbali/sbali na miste (jako v Elgato appce)."""
 
-    def __init__(self, plugin: dict, expanded: bool = False):
+    def __init__(self, plugin: dict, expanded: bool = False, on_open_settings=None):
         super().__init__()
         self.plugin = plugin
         self._expanded = expanded
@@ -168,10 +113,28 @@ class CategorySection(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(2)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(0)
+
         self.header_btn = QPushButton()
         self.header_btn.setCursor(Qt.PointingHandCursor)
         self.header_btn.clicked.connect(self._toggle)
-        outer.addWidget(self.header_btn)
+        header_row.addWidget(self.header_btn, stretch=1)
+
+        if plugin.get("has_settings") and on_open_settings:
+            settings_btn = QPushButton("\u2699")
+            settings_btn.setCursor(Qt.PointingHandCursor)
+            settings_btn.setFixedSize(24, 24)
+            settings_btn.setToolTip("Nastavení pluginu")
+            settings_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: none; color: {TEXT_MUTED}; font-size: 13px; border-radius: 12px; }}
+                QPushButton:hover {{ background-color: rgba(255,255,255,0.08); color: {TEXT}; }}
+            """)
+            settings_btn.clicked.connect(lambda checked=False, pid=plugin["id"]: on_open_settings(pid))
+            header_row.addWidget(settings_btn)
+
+        outer.addLayout(header_row)
 
         self.content = QWidget()
         content_layout = QVBoxLayout(self.content)
@@ -185,6 +148,7 @@ class CategorySection(QWidget):
                 "action_id": module["id"],
                 "has_amount": module.get("has_amount", False),
                 "input_type": module.get("input_type"),
+                "placeholder": module.get("placeholder"),
             }
             content_layout.addWidget(DraggableModuleItem(action))
         outer.addWidget(self.content)
@@ -206,6 +170,83 @@ class CategorySection(QWidget):
             }}
             QPushButton:hover {{ background-color: rgba(255,255,255,0.05); border-radius: 6px; }}
         """)
+
+
+class PluginSettingsDialog(QDialog):
+    """
+    Male okno na nastaveni pluginu (heslo, port...) - podle SETTINGS
+    schematu, ktere plugin sam definuje. Po ulozeni appka rovnou zkusi
+    znovu pripojit (test_connection()), pokud ho plugin nabizi.
+    """
+
+    def __init__(self, plugin_id: str, module, message: str = None, parent=None):
+        super().__init__(parent)
+        self.plugin_id = plugin_id
+        self.module = module
+        self.setWindowTitle("Nastavení pluginu")
+        self.setMinimumWidth(320)
+
+        layout = QVBoxLayout(self)
+
+        if message:
+            info = QLabel(message)
+            info.setWordWrap(True)
+            info.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+            layout.addWidget(info)
+
+        schema = getattr(module, "SETTINGS", [])
+        current = module.get_settings() if hasattr(module, "get_settings") else {}
+
+        self._edits = {}
+        for field in schema:
+            row = QHBoxLayout()
+            label = QLabel(field["name"])
+            label.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+            row.addWidget(label)
+            edit = QLineEdit(str(current.get(field["id"], field.get("default", ""))))
+            if field.get("input_type") == "password":
+                edit.setEchoMode(QLineEdit.Password)
+            edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: #1c1c1f; border: 1px solid rgba(255,255,255,0.12);
+                    border-radius: 6px; padding: 4px 8px; color: {TEXT}; font-size: 12px;
+                }}
+            """)
+            row.addWidget(edit)
+            self._edits[field["id"]] = edit
+            layout.addLayout(row)
+
+        buttons_row = QHBoxLayout()
+        buttons_row.addStretch()
+        save_btn = QPushButton("Uložit a připojit")
+        save_btn.setCursor(Qt.PointingHandCursor)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ORANGE}; color: white; border: none;
+                border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background-color: #e8650f; }}
+        """)
+        save_btn.clicked.connect(self._save_and_test)
+        buttons_row.addWidget(save_btn)
+        layout.addLayout(buttons_row)
+
+        self.setStyleSheet(f"QDialog {{ background-color: {BG}; }}")
+
+    def _save_and_test(self):
+        values = {field_id: edit.text() for field_id, edit in self._edits.items()}
+        if hasattr(self.module, "save_settings"):
+            self.module.save_settings(values)
+
+        if hasattr(self.module, "test_connection"):
+            ok, error = self.module.test_connection()
+            if ok:
+                QMessageBox.information(self, "Připojeno", "Nastavení uloženo, připojení funguje.")
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Stále se nepodařilo připojit", error or "Zkontroluj zadané údaje.")
+        else:
+            self.accept()
 
 
 class PluginsPanel(QWidget):
@@ -237,7 +278,7 @@ class PluginsPanel(QWidget):
         self.stack = QStackedWidget()
         outer.addWidget(self.stack)
 
-        # --- stranka 0: "Akce" - nainstalovane kategorie ---
+        # --- stranka 0: "Akce" - vestavene + skutecne nainstalovane pluginy ---
         self.actions_page = QWidget()
         actions_layout = QVBoxLayout(self.actions_page)
         actions_layout.setContentsMargins(0, 4, 0, 0)
@@ -250,7 +291,7 @@ class PluginsPanel(QWidget):
         self.actions_scroll.setFrameShape(QFrame.NoFrame)
         actions_layout.addWidget(self.actions_scroll)
 
-        # --- stranka 1: "Obchod" - pluginy k instalaci ---
+        # --- stranka 1: "Obchod" - co jde stahnout ---
         self.store_page = QWidget()
         store_layout = QVBoxLayout(self.store_page)
         store_layout.setContentsMargins(0, 4, 0, 0)
@@ -271,6 +312,17 @@ class PluginsPanel(QWidget):
         self._switch_tab(0)
 
         self.setStyleSheet(f"background-color: {BG}; border-left: 1px solid rgba(255,255,255,0.06);")
+
+    def open_settings_dialog(self, plugin_id: str, message: str = None):
+        module = plugin_loader.get_plugin_module(plugin_id)
+        if module is None:
+            return
+        schema = getattr(module, "SETTINGS", [])
+        if not schema:
+            QMessageBox.information(self, "Bez nastavení", "Tenhle plugin nemá žádné nastavení k úpravě.")
+            return
+        dialog = PluginSettingsDialog(plugin_id, module, message, parent=self)
+        dialog.exec()
 
     def _switch_tab(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -296,9 +348,12 @@ class PluginsPanel(QWidget):
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(4)
         layout.setAlignment(Qt.AlignTop)
-        for plugin in PLUGINS:
-            if plugin.get("installed", True):
-                layout.addWidget(CategorySection(plugin))
+
+        for plugin in BUILTIN_PLUGINS:
+            layout.addWidget(CategorySection(plugin, on_open_settings=self.open_settings_dialog))
+        for plugin in plugin_loader.load_installed_plugins():
+            layout.addWidget(CategorySection(plugin, on_open_settings=self.open_settings_dialog))
+
         layout.addStretch()
         self.actions_scroll.setWidget(inner)
 
@@ -309,7 +364,9 @@ class PluginsPanel(QWidget):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignTop)
 
-        available = [p for p in PLUGINS if not p.get("installed", True)]
+        installed_ids = plugin_loader.installed_plugin_ids()
+        available = [p for p in plugin_loader.STORE_CATALOG if p["id"] not in installed_ids]
+
         if not available:
             empty = QLabel("Všechny dostupné pluginy\njsou už nainstalované.")
             empty.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
@@ -339,12 +396,26 @@ class PluginsPanel(QWidget):
             }}
             QPushButton:hover {{ background-color: #e8650f; }}
         """)
-        install_btn.clicked.connect(lambda checked=False, p=plugin: self._install_plugin(p))
+        install_btn.clicked.connect(lambda checked=False, p=plugin, b=install_btn: self._install_plugin(p, b))
         row_layout.addWidget(install_btn)
         return row
 
-    def _install_plugin(self, plugin: dict):
-        plugin["installed"] = True
+    def _install_plugin(self, plugin: dict, button: QPushButton):
+        button.setEnabled(False)
+        button.setText("Stahuji…")
+        QApplication.processEvents()  # aby se "Stahuji…" stihlo vykreslit pred blokujicim stahovanim
+
+        ok, error = plugin_loader.download_and_install(plugin["id"], plugin["zip_url"])
+
+        if not ok:
+            button.setEnabled(True)
+            button.setText("Instalovat")
+            QMessageBox.warning(
+                self, "Instalace se nezdařila",
+                f"Plugin '{plugin['name']}' se nepodařilo stáhnout/nainstalovat:\n\n{error}",
+            )
+            return
+
         self._rebuild_actions_list()
         self._rebuild_store_list()
         self._switch_tab(0)

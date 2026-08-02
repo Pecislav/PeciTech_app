@@ -376,10 +376,11 @@ class PageNavBar(QWidget):
     "+" se deaktivuje po dosazeni MAX_PAGES stranek.
     """
 
-    def __init__(self, on_page_selected, on_add_page):
+    def __init__(self, on_page_selected, on_add_page, on_remove_page):
         super().__init__()
         self._on_page_selected = on_page_selected
         self._on_add_page = on_add_page
+        self._on_remove_page = on_remove_page
         self._page_buttons = []
         self._current_index = 0
 
@@ -438,11 +439,24 @@ class PageNavBar(QWidget):
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFixedSize(28, 28)
             btn.clicked.connect(lambda checked=False, idx=i: self._on_page_selected(idx))
+            btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(
+                lambda pos, idx=i, b=btn: self._show_page_context_menu(b, pos, idx)
+            )
             self._page_buttons.append(btn)
             self._pills_layout.addWidget(btn)
 
         self.add_btn.setEnabled(count < MAX_PAGES)
         self.set_active(min(self._current_index, count - 1))
+
+    def _show_page_context_menu(self, button: QPushButton, pos, index: int):
+        if len(self._page_buttons) <= 1:
+            return  # nejde odebrat posledni zbyvajici stranku
+        menu = QMenu(button)
+        remove_action = menu.addAction("Odebrat stránku")
+        chosen = menu.exec(button.mapToGlobal(pos))
+        if chosen == remove_action:
+            self._on_remove_page(index)
 
     def set_active(self, index: int):
         self._current_index = index
@@ -472,9 +486,10 @@ class ConfigPanel(QWidget):
     akce, ktere jdou spustit primo ze softwaru (bez hardwaru).
     """
 
-    def __init__(self):
+    def __init__(self, on_needs_settings=None):
         super().__init__()
         self._current_target = None
+        self._on_needs_settings = on_needs_settings
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 14, 24, 14)
@@ -515,7 +530,7 @@ class ConfigPanel(QWidget):
         if input_type == "url":
             row = QHBoxLayout()
             row.addWidget(self._muted_label("URL:"))
-            url_edit = self._styled_line_edit(action.get("value", ""), "https://…")
+            url_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "https://…")
             url_edit.editingFinished.connect(lambda a=action, e=url_edit: a.update({"value": e.text()}))
             row.addWidget(url_edit)
             self.fields_layout.addLayout(row)
@@ -523,7 +538,7 @@ class ConfigPanel(QWidget):
         elif input_type == "path":
             row = QHBoxLayout()
             row.addWidget(self._muted_label("Cesta:"))
-            path_edit = self._styled_line_edit(action.get("value", ""), "Cesta k aplikaci")
+            path_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "Cesta k aplikaci")
             path_edit.editingFinished.connect(lambda a=action, e=path_edit: a.update({"value": e.text()}))
             row.addWidget(path_edit)
             browse_btn = QPushButton("Procházet…")
@@ -535,7 +550,7 @@ class ConfigPanel(QWidget):
         elif input_type == "text":
             row = QHBoxLayout()
             row.addWidget(self._muted_label("Text:"))
-            text_edit = self._styled_line_edit(action.get("value", ""), "Text k napsání")
+            text_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "Text k napsání")
             text_edit.editingFinished.connect(lambda a=action, e=text_edit: a.update({"value": e.text()}))
             row.addWidget(text_edit)
             self.fields_layout.addLayout(row)
@@ -632,9 +647,12 @@ class ConfigPanel(QWidget):
             return  # nema smysl "testovat" - viz page nav bar
         else:
             # skutecny plugin nacteny ze slozky plugins/ (viz plugin_loader.py)
-            ok, error = plugin_loader.run_plugin_action(plugin_id, action_id, value)
+            ok, error, needs_settings = plugin_loader.run_plugin_action(plugin_id, action_id, value)
             if not ok:
-                QMessageBox.warning(self, "Chyba pluginu", error or "Akci se nepodařilo spustit.")
+                if needs_settings and self._on_needs_settings:
+                    self._on_needs_settings(plugin_id, error)
+                else:
+                    QMessageBox.warning(self, "Chyba pluginu", error or "Akci se nepodařilo spustit.")
 
     def _run_system_action(self, action_id: str, value: str):
         if action_id == "open_website":
@@ -749,10 +767,14 @@ class DeviceDetailPage(QWidget):
         self.outline = DeviceOutline()
         left_layout.addWidget(self.outline, alignment=Qt.AlignHCenter)
 
-        self.page_nav = PageNavBar(on_page_selected=self._go_to_page, on_add_page=self._add_page)
+        self.page_nav = PageNavBar(
+            on_page_selected=self._go_to_page,
+            on_add_page=self._add_page,
+            on_remove_page=self._remove_page,
+        )
         left_layout.addWidget(self.page_nav)
 
-        self.config_panel = ConfigPanel()
+        self.config_panel = ConfigPanel(on_needs_settings=self._handle_needs_settings)
         left_layout.addWidget(self.config_panel)
 
         left_layout.addStretch()
@@ -780,6 +802,9 @@ class DeviceDetailPage(QWidget):
 
     def set_device_name(self, name: str):
         self.title_label.setText(name)
+
+    def _handle_needs_settings(self, plugin_id: str, message: str):
+        self.plugins_panel.open_settings_dialog(plugin_id, message)
 
     def _select_target(self, target):
         if self._selected_target is not None and self._selected_target is not target:
@@ -819,3 +844,27 @@ class DeviceDetailPage(QWidget):
         self.pages.append(self._blank_page())
         self.page_nav.set_page_count(len(self.pages))
         self._go_to_page(len(self.pages) - 1)
+
+    def _remove_page(self, index: int):
+        if len(self.pages) <= 1:
+            return
+        answer = QMessageBox.question(
+            self, "Odebrat stránku",
+            f"Opravdu chceš odebrat stránku {index + 1}? "
+            "Všechna přiřazení tlačítek na ní budou ztracena.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        del self.pages[index]
+
+        if index < self.current_page_index:
+            new_index = self.current_page_index - 1
+        elif index == self.current_page_index:
+            new_index = min(index, len(self.pages) - 1)
+        else:
+            new_index = self.current_page_index
+
+        self.page_nav.set_page_count(len(self.pages))
+        self._go_to_page(new_index)
