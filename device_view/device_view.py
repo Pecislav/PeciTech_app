@@ -42,7 +42,7 @@ import webbrowser
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
-    QMenu, QLineEdit, QSlider, QFileDialog, QMessageBox,
+    QMenu, QLineEdit, QSlider, QFileDialog, QMessageBox, QComboBox,
 )
 
 try:
@@ -561,6 +561,43 @@ class ConfigPanel(QWidget):
             hotkey_edit = self._styled_line_edit(action.get("value", ""), "např. ctrl+shift+s")
             hotkey_edit.editingFinished.connect(lambda a=action, e=hotkey_edit: a.update({"value": e.text()}))
             row.addWidget(hotkey_edit)
+            self.fields_layout.addLayout(row)
+
+        elif input_type == "choice":
+            row = QHBoxLayout()
+            row.addWidget(self._muted_label("Hodnota:"))
+
+            combo = QComboBox()
+            combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: #1c1c1f; border: 1px solid rgba(255,255,255,0.12);
+                    border-radius: 6px; padding: 4px 8px; color: {TEXT}; font-size: 12px;
+                }}
+            """)
+            choices = plugin_loader.get_plugin_choices(action.get("plugin_id"), action.get("action_id"))
+            current_value = action.get("value", "")
+            if current_value and current_value not in choices:
+                choices = [current_value] + choices
+            if choices:
+                combo.addItems(choices)
+                if current_value in choices:
+                    combo.setCurrentText(current_value)
+            else:
+                combo.addItem("(nic nenalezeno - zkus Obnovit)")
+            combo.currentTextChanged.connect(lambda text, a=action: a.update({"value": text}))
+            row.addWidget(combo, 1)
+
+            refresh_btn = QPushButton("\u21BB")
+            refresh_btn.setFixedSize(28, 28)
+            refresh_btn.setCursor(Qt.PointingHandCursor)
+            refresh_btn.setToolTip("Obnovit seznam")
+            refresh_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: {TEXT_MUTED}; }}
+                QPushButton:hover {{ background-color: rgba(255,255,255,0.06); }}
+            """)
+            refresh_btn.clicked.connect(lambda checked=False, t=target: self.show_for(t))
+            row.addWidget(refresh_btn)
+
             self.fields_layout.addLayout(row)
 
         elif action.get("has_amount"):

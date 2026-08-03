@@ -35,6 +35,13 @@ heslo" nize je zalozena na hledani slova "auth" v chybove zprave - podle
 verze obsws-python se muze presna chybova zprava/typ vyjimky lisit, tak
 to pripadne uprav podle toho, co ti to skutecne vyhodi (nemam tu bohuzel
 bezici OBS, abych si to overil naziv).
+
+Stejne tak get_scene_list()/get_input_list() (pouzite v _get_scene_names/
+_get_input_names) a klice "sceneName"/"inputName" v odpovedi vychazi z
+oficialni specifikace protokolu v5 (GetSceneList/GetInputList), ale
+nemam to overene naziv proti bezicimu OBS - pokud se nazev metody nebo
+klice v odpovedi lisi podle tve verze obsws-python, dej vedet, dohledam
+presne.
 """
 
 import json
@@ -52,14 +59,8 @@ PLUGIN_INFO = {
 ACTIONS = [
     {"id": "start_stream", "name": "Spustit stream", "icon": "\U0001F534"},
     {"id": "stop_stream", "name": "Zastavit stream", "icon": "\u23F9"},
-    {
-        "id": "switch_scene", "name": "Přepnout scénu", "icon": "\U0001F3AC",
-        "input_type": "text", "placeholder": "Přesný název scény v OBS",
-    },
-    {
-        "id": "mute_mic", "name": "Ztlumit mikrofon", "icon": "\U0001F507",
-        "input_type": "text", "placeholder": "Název zdroje, např. Mic/Aux",
-    },
+    {"id": "switch_scene", "name": "Přepnout scénu", "icon": "\U0001F3AC", "input_type": "choice"},
+    {"id": "mute_mic", "name": "Ztlumit mikrofon", "icon": "\U0001F507", "input_type": "choice"},
 ]
 
 # --- Nastaveni pluginu - appka podle tohohle sama vykresli dialog (viz
@@ -123,6 +124,47 @@ def test_connection():
         return False, "Chybí knihovna 'obsws-python' - nainstaluj: pip install obsws-python"
     except Exception as exc:
         return False, str(exc)
+
+
+def get_choices(action_id: str) -> list:
+    """
+    Appka tohle zavola pri vykreslovani konfiguracniho panelu pro akce
+    s "input_type": "choice", aby misto rucniho psani nabidla realny
+    seznam z OBS (nazvy scen / zvukovych vstupu).
+    """
+    if action_id == "switch_scene":
+        return _get_scene_names()
+    if action_id == "mute_mic":
+        return _get_input_names()
+    return []
+
+
+def _get_scene_names() -> list:
+    try:
+        client = _connect()
+    except Exception:
+        return []
+    try:
+        response = client.get_scene_list()
+        return [scene["sceneName"] for scene in response.scenes]
+    except Exception:
+        return []
+    finally:
+        client.disconnect()
+
+
+def _get_input_names() -> list:
+    try:
+        client = _connect()
+    except Exception:
+        return []
+    try:
+        response = client.get_input_list()
+        return [item["inputName"] for item in response.inputs]
+    except Exception:
+        return []
+    finally:
+        client.disconnect()
 
 
 def run(action_id: str, value: str = "") -> None:

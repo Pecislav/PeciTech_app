@@ -31,6 +31,14 @@ architektury, kterou jsi navrhl:
      zacinajici "NEEDS_SETTINGS:" - appka pak misto obycejne chybove
      hlasky rovnou otevre dialog s nastavenim (viz plugins/obs/plugin.py).
 
+  6. VOLITELNE - pokud nejaka akce ma mit misto textoveho pole rozbalovaci
+     seznam s hodnotami natazenymi primo ze zdroje (napr. nazvy scen v
+     OBS), oznac tu akci v ACTIONS jako "input_type": "choice" a plugin
+     definuj:
+       def get_choices(action_id: str) -> list[str]: ...
+     Appka ho zavola pri kazdem otevreni konfiguracniho panelu (a pri
+     kliknuti na "Obnovit") - viz plugins/obs/plugin.py (scenu/mikrofony).
+
 BEZPECNOST: tohle spousti kod stazeny z internetu bez sandboxu a bez
 overeni puvodu/podpisu. Pro vyvoj/prototyp je to v poradku, ale pred
 realnym vydanim produktu by stalo za to aspon overovat, ze zip pochazi
@@ -151,6 +159,22 @@ def load_installed_plugins() -> list:
 def get_plugin_module(plugin_id: str):
     """Vrati nacteny modul pluginu (pro pristup k get_settings/save_settings/test_connection), nebo None."""
     return _RUNTIME_REGISTRY.get(plugin_id)
+
+
+def get_plugin_choices(plugin_id: str, action_id: str) -> list:
+    """
+    Pro akce s "input_type": "choice" - zavola plugin.get_choices(action_id)
+    a vrati seznam retezcu pro rozbalovaci seznam (napr. nazvy scen v OBS).
+    Prazdny seznam, kdyz plugin get_choices nema, nebo se neco nepovede
+    (napr. OBS zrovna nebezi) - appka pak ukaze prazdny/informativni dropdown.
+    """
+    module = _RUNTIME_REGISTRY.get(plugin_id)
+    if module is None or not hasattr(module, "get_choices"):
+        return []
+    try:
+        return list(module.get_choices(action_id) or [])
+    except Exception:
+        return []
 
 
 def run_plugin_action(plugin_id: str, action_id: str, value: str = ""):
