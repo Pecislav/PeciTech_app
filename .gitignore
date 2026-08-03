@@ -1,0 +1,10 @@
+# Ignorovat konfigurace s citlivými údaji
+config.json
+*.json
+
+# Ignorovat Python mezipaměť
+__pycache__/
+*.pyc
+
+# Ignorovat nastavení VS Code
+.vscode/
