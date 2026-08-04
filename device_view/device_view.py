@@ -29,8 +29,19 @@ plugin_loader.run_plugin_action() - viz plugin_loader.py.
 
 Pod mrizkou tlacitek je navigacni panel stranek (<, cisla, +, >) - jako
 v Elgato appce, max. MAX_PAGES stranek. Kazda stranka ma vlastni sadu
-prirazeni tlacitek; nove stranky zacinaji prazdne. Enkodery zatim
-stranky nemaji.
+prirazeni jak tlacitek, tak enkoderu (viz DeviceDetailPage.pages -
+{"buttons": [...], "encoders": [...]} na kazde strance). Stranku jde
+odebrat pravym klikem na jeji cislo -> "Odebrat stránku" -> potvrzeni.
+
+Kazda akce ma "target": "button" / "encoder" / "both" - urcuje, kam se
+da pretahnout. Jednorazove akce (napr. Prepnout scenu) jsou jen pro
+tlacitko; na enkoder se pretahnout nedaji (cil se behem tazeni ani
+nerozsvití, coz signalizuje nekompatibilitu).
+
+Layout: konfiguracni panel dole ma pevnou vysku (setFixedHeight), obrys
+PeciDecku ma stretch=1 v levem sloupci, takze pri zvetseni okna roste
+prave tahle cast (a centruje se v ni), misto aby vznikala prazdna
+cerna plocha pod panelem.
 """
 
 import json
@@ -146,24 +157,36 @@ class Keycap(QFrame):
                 self.on_remove()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
-            event.acceptProposedAction()
-            self._drag_hover = True
-            self._apply_style()
+        action = self._peek_action(event)
+        if action is None or action.get("target", "both") not in ("button", "both"):
+            return  # tahle akce je urcena jen pro enkoder
+        event.acceptProposedAction()
+        self._drag_hover = True
+        self._apply_style()
 
     def dragLeaveEvent(self, event):
         self._drag_hover = False
         self._apply_style()
 
     def dropEvent(self, event):
-        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
-            raw = bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode("utf-8")
-            self.assign(json.loads(raw))
+        action = self._peek_action(event)
+        if action is not None and action.get("target", "both") in ("button", "both"):
+            self.assign(action)
             event.acceptProposedAction()
             if self.on_dropped:
                 self.on_dropped()
         self._drag_hover = False
         self._apply_style()
+
+    @staticmethod
+    def _peek_action(event):
+        if not event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            return None
+        try:
+            raw = bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode("utf-8")
+            return json.loads(raw)
+        except Exception:
+            return None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.on_click:
@@ -271,19 +294,21 @@ class EncoderDial(QFrame):
                 self.on_remove()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
-            event.acceptProposedAction()
-            self._drag_hover = True
-            self._apply_style()
+        action = Keycap._peek_action(event)
+        if action is None or action.get("target", "both") not in ("encoder", "both"):
+            return  # tahle akce je urcena jen pro tlacitko
+        event.acceptProposedAction()
+        self._drag_hover = True
+        self._apply_style()
 
     def dragLeaveEvent(self, event):
         self._drag_hover = False
         self._apply_style()
 
     def dropEvent(self, event):
-        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
-            raw = bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode("utf-8")
-            self.assign(json.loads(raw))
+        action = Keycap._peek_action(event)
+        if action is not None and action.get("target", "both") in ("encoder", "both"):
+            self.assign(action)
             event.acceptProposedAction()
             if self.on_dropped:
                 self.on_dropped()
@@ -504,7 +529,7 @@ class ConfigPanel(QWidget):
         root.addLayout(self.fields_layout)
 
         self.setStyleSheet(f"background-color: {BG}; border-top: 1px solid rgba(255,255,255,0.08);")
-        self.setMinimumHeight(80)
+        self.setFixedHeight(210)
 
     def show_for(self, target):
         """target = Keycap nebo EncoderDial (ma atribut .assigned)."""
@@ -799,10 +824,9 @@ class DeviceDetailPage(QWidget):
         left_layout = QVBoxLayout(left_container)
         left_layout.setContentsMargins(0, 24, 0, 0)
         left_layout.setSpacing(0)
-        left_layout.setAlignment(Qt.AlignTop)
 
         self.outline = DeviceOutline()
-        left_layout.addWidget(self.outline, alignment=Qt.AlignHCenter)
+        left_layout.addWidget(self.outline, stretch=1, alignment=Qt.AlignCenter)
 
         self.page_nav = PageNavBar(
             on_page_selected=self._go_to_page,
@@ -813,8 +837,6 @@ class DeviceDetailPage(QWidget):
 
         self.config_panel = ConfigPanel(on_needs_settings=self._handle_needs_settings)
         left_layout.addWidget(self.config_panel)
-
-        left_layout.addStretch()
 
         # --- pravy sloupec (~20 %, cela vyska) ---
         self.plugins_panel = PluginsPanel()
@@ -830,12 +852,12 @@ class DeviceDetailPage(QWidget):
         for enc in self.outline.encoders:
             enc.on_click = self._select_target
             enc.on_remove = lambda e=enc: self._on_target_removed(e)
-            enc.on_dropped = lambda e=enc: self._select_target(e)
+            enc.on_dropped = lambda e=enc: self._on_encoder_dropped(e)
 
         self.setStyleSheet(f"background-color: {BG};")
 
     def _blank_page(self):
-        return [None] * 8
+        return {"buttons": [None] * 8, "encoders": [None] * 3}
 
     def set_device_name(self, name: str):
         self.title_label.setText(name)
@@ -851,12 +873,19 @@ class DeviceDetailPage(QWidget):
         self.config_panel.show_for(target)
 
     def _on_keycap_dropped(self, keycap: Keycap):
-        self.pages[self.current_page_index][keycap.index] = keycap.assigned
+        self.pages[self.current_page_index]["buttons"][keycap.index] = keycap.assigned
         self._select_target(keycap)
 
+    def _on_encoder_dropped(self, encoder: EncoderDial):
+        self.pages[self.current_page_index]["encoders"][encoder.index] = encoder.assigned
+        self._select_target(encoder)
+
     def _on_target_removed(self, target):
+        page = self.pages[self.current_page_index]
         if isinstance(target, Keycap):
-            self.pages[self.current_page_index][target.index] = None
+            page["buttons"][target.index] = None
+        elif isinstance(target, EncoderDial):
+            page["encoders"][target.index] = None
         if self._selected_target is target:
             self.config_panel.show_for(target)
 
@@ -866,13 +895,19 @@ class DeviceDetailPage(QWidget):
         self.current_page_index = index
         page_data = self.pages[index]
         for i, key in enumerate(self.outline.keycaps):
-            action = page_data[i]
+            action = page_data["buttons"][i]
             if action:
                 key.assign(action)
             else:
                 key.clear()
+        for i, enc in enumerate(self.outline.encoders):
+            action = page_data["encoders"][i]
+            if action:
+                enc.assign(action)
+            else:
+                enc.clear()
         self.page_nav.set_active(index)
-        if self._selected_target in self.outline.keycaps:
+        if self._selected_target in (self.outline.keycaps + self.outline.encoders):
             self.config_panel.show_for(self._selected_target)
 
     def _add_page(self):

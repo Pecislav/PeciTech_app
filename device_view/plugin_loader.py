@@ -13,12 +13,22 @@ architektury, kterou jsi navrhl:
   3. load_installed_plugins() projde slozku plugins/ a kazdou podslozku
      nacte pres importlib jako Python modul.
   4. Kazdy plugin.py musi definovat:
-       PLUGIN_INFO = {"id": ..., "name": ..., "icon": ...}
-       ACTIONS = [ {"id", "name", "icon", volitelne "input_type"/"has_amount"}, ... ]
+       PLUGIN_INFO = {"id": ..., "name": ..., "icon": ..., volitelne "version"/"description"}
+       ACTIONS = [ {"id", "name", "icon", volitelne "input_type"/"has_amount"/"target"}, ... ]
        def run(action_id: str, value: str = "") -> None: ...
      Presny priklad je v plugins/_example_plugin/plugin.py (ta slozka
      zacina podtrzitkem, takze se needetekuje jako "nainstalovana" -
      je to jen referencni ukazka formatu).
+
+     "version"/"description" se pouzivaji jen k zobrazeni ve spravci
+     pluginu (Nastaveni -> Pluginy, viz settings.py) - pokud chybi,
+     appka pouzije "—" / prazdny popis.
+
+  Spravce pluginu (Nastaveni -> Pluginy) navic umoznuje plugin
+  POVOLIT/ZAKAZAT (bez odinstalovani - viz set_plugin_enabled(), stav
+  se uklada do plugins/_disabled.json) a ODINSTALOVAT (smaze slozku -
+  viz uninstall_plugin()). Zakazany plugin se v prave panelu na hlavni
+  obrazovce (Akce) neukazuje a jeho run() nejde zavolat.
 
   5. VOLITELNE - pokud plugin potrebuje vlastni nastaveni (heslo, port...),
      muze navic definovat:
@@ -53,6 +63,7 @@ main_window.py.
 
 import importlib.util
 import io
+import json
 import shutil
 import urllib.request
 import zipfile
@@ -65,9 +76,12 @@ PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
 STORE_CATALOG = [
     {
         "id": "obs", "name": "OBS Studio", "icon": "\U0001F3A5",
+        "description": "Ovládání OBS Studia přes obs-websocket (stream, scény, mikrofon).",
         "zip_url": "https://github.com/<tvuj-ucet>/pecitech-plugin-obs/archive/refs/heads/main.zip",
     },
 ]
+
+DISABLED_PATH = PLUGINS_DIR / "_disabled.json"
 
 # plugin_id -> nacteny modul (pristup k run/get_settings/save_settings/test_connection),
 # naplni ho load_installed_plugins()
@@ -78,6 +92,50 @@ def installed_plugin_ids() -> set:
     if not PLUGINS_DIR.exists():
         return set()
     return {p.name for p in PLUGINS_DIR.iterdir() if p.is_dir() and not p.name.startswith("_")}
+
+
+def _load_disabled() -> set:
+    if DISABLED_PATH.exists():
+        try:
+            return set(json.loads(DISABLED_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            return set()
+    return set()
+
+
+def _save_disabled(ids: set) -> None:
+    PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+    DISABLED_PATH.write_text(json.dumps(sorted(ids), indent=2), encoding="utf-8")
+
+
+def is_plugin_enabled(plugin_id: str) -> bool:
+    return plugin_id not in _load_disabled()
+
+
+def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
+    """Zapne/vypne plugin bez odinstalovani - viz Nastaveni -> Pluginy (settings.py)."""
+    disabled = _load_disabled()
+    if enabled:
+        disabled.discard(plugin_id)
+    else:
+        disabled.add(plugin_id)
+    _save_disabled(disabled)
+
+
+def uninstall_plugin(plugin_id: str):
+    """Smaze slozku plugins/<plugin_id>/ z disku. Vrati (uspech: bool, chyba: str)."""
+    target = PLUGINS_DIR / plugin_id
+    if not target.exists():
+        return False, "Plugin nenalezen na disku."
+    try:
+        shutil.rmtree(target)
+        disabled = _load_disabled()
+        disabled.discard(plugin_id)
+        _save_disabled(disabled)
+        _RUNTIME_REGISTRY.pop(plugin_id, None)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def download_and_install(plugin_id: str, zip_url: str):
@@ -107,14 +165,21 @@ def download_and_install(plugin_id: str, zip_url: str):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def load_installed_plugins() -> list:
+def load_installed_plugins(include_disabled: bool = False) -> list:
     """
     Projde plugins/, kazdou podslozku nacte pres importlib. Vraci seznam
     ve stejnem tvaru jako vestavene kategorie (Navigace/Systém), takze
     CategorySection v plugins_panel.py nemusi rozlisovat puvod:
-      {"id", "name", "icon", "installed": True, "modules": [...]}
-    Zaroven naplni _RUNTIME_REGISTRY (plugin_id -> run()), aby slo akce
-    skutecne spustit - viz run_plugin_action().
+      {"id", "name", "icon", "version", "description", "installed": True,
+       "enabled": bool, "modules": [...], "has_settings": bool}
+
+    include_disabled=False (vychozi, pouziva prave panel na hlavni
+    obrazovce): preskoci zakazane pluginy, ukaze jen povolene.
+    include_disabled=True (pouziva Nastaveni -> Pluginy): vrati uplne
+    vsechny nainstalovane, aby je slo v UI videt a prepinat.
+
+    Zaroven naplni _RUNTIME_REGISTRY (plugin_id -> modul) pro POVOLENE
+    pluginy, aby slo akce skutecne spustit - viz run_plugin_action().
     """
     global _RUNTIME_REGISTRY
     _RUNTIME_REGISTRY = {}
@@ -122,6 +187,8 @@ def load_installed_plugins() -> list:
 
     if not PLUGINS_DIR.exists():
         return plugins
+
+    disabled_ids = _load_disabled()
 
     for folder in sorted(PLUGINS_DIR.iterdir()):
         if not folder.is_dir() or folder.name.startswith("_"):
@@ -136,18 +203,26 @@ def load_installed_plugins() -> list:
 
             info = getattr(module, "PLUGIN_INFO", {})
             plugin_id = info.get("id", folder.name)
+            enabled = plugin_id not in disabled_ids
+
+            if not enabled and not include_disabled:
+                continue
+
             actions = getattr(module, "ACTIONS", [])
             settings_schema = getattr(module, "SETTINGS", [])
 
-            if getattr(module, "run", None) is not None:
+            if enabled and getattr(module, "run", None) is not None:
                 _RUNTIME_REGISTRY[plugin_id] = module
 
             plugins.append({
                 "id": plugin_id,
                 "name": info.get("name", folder.name),
                 "icon": info.get("icon", "\U0001F9E9"),
+                "version": info.get("version", "—"),
+                "description": info.get("description", ""),
                 "installed": True,
-                "modules": actions,
+                "enabled": enabled,
+                "modules": actions if enabled else [],
                 "has_settings": bool(settings_schema),
             })
         except Exception as exc:

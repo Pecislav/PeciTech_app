@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt, QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QScrollArea, QApplication, QStackedWidget, QMessageBox, QDialog, QLineEdit,
+    QScrollArea, QApplication, QMessageBox, QDialog, QLineEdit,
 )
 
 from . import plugin_loader
@@ -36,20 +36,20 @@ BUILTIN_PLUGINS = [
     {
         "id": "navigation", "name": "Navigace", "icon": "\U0001F9ED", "installed": True, "builtin": True,
         "modules": [
-            {"id": "next_page", "name": "Další stránka", "icon": "\u25B6"},
-            {"id": "prev_page", "name": "Předchozí stránka", "icon": "\u25C0"},
+            {"id": "next_page", "name": "Další stránka", "icon": "\u25B6", "target": "button"},
+            {"id": "prev_page", "name": "Předchozí stránka", "icon": "\u25C0", "target": "button"},
         ],
     },
     {
         "id": "system", "name": "Systém", "icon": "\U0001F5A5", "installed": True, "builtin": True,
         "modules": [
-            {"id": "open_website", "name": "Otevřít web", "icon": "\U0001F310", "input_type": "url"},
-            {"id": "open_app", "name": "Otevřít aplikaci", "icon": "\U0001F4F1", "input_type": "path"},
-            {"id": "type_text", "name": "Napsat text", "icon": "\U0001F4DD", "input_type": "text"},
-            {"id": "hotkey", "name": "Klávesová zkratka", "icon": "\u2328", "input_type": "hotkey"},
-            {"id": "media_play_pause", "name": "Média: Přehrát/Pauza", "icon": "\u23EF"},
-            {"id": "media_next", "name": "Média: Další", "icon": "\u23ED"},
-            {"id": "media_prev", "name": "Média: Předchozí", "icon": "\u23EE"},
+            {"id": "open_website", "name": "Otevřít web", "icon": "\U0001F310", "input_type": "url", "target": "button"},
+            {"id": "open_app", "name": "Otevřít aplikaci", "icon": "\U0001F4F1", "input_type": "path", "target": "button"},
+            {"id": "type_text", "name": "Napsat text", "icon": "\U0001F4DD", "input_type": "text", "target": "button"},
+            {"id": "hotkey", "name": "Klávesová zkratka", "icon": "\u2328", "input_type": "hotkey", "target": "button"},
+            {"id": "media_play_pause", "name": "Média: Přehrát/Pauza", "icon": "\u23EF", "target": "button"},
+            {"id": "media_next", "name": "Média: Další", "icon": "\u23ED", "target": "both"},
+            {"id": "media_prev", "name": "Média: Předchozí", "icon": "\u23EE", "target": "both"},
         ],
     },
 ]
@@ -149,6 +149,7 @@ class CategorySection(QWidget):
                 "has_amount": module.get("has_amount", False),
                 "input_type": module.get("input_type"),
                 "placeholder": module.get("placeholder"),
+                "target": module.get("target", "both"),
             }
             content_layout.addWidget(DraggableModuleItem(action))
         outer.addWidget(self.content)
@@ -250,7 +251,12 @@ class PluginSettingsDialog(QDialog):
 
 
 class PluginsPanel(QWidget):
-    """Zalozky Akce/Obchod nahore + pod tim bud rozbalovaci kategorie, nebo seznam k instalaci."""
+    """
+    Cisty panel s akcemi pro drag & drop (vestavene kategorie + skutecne
+    nainstalovane a POVOLENE pluginy). Zadna zalozka "Obchod" tady uz
+    neni - spravu pluginu (instalace/odinstalace/povoleni) resi
+    Nastaveni -> Pluginy, viz settings.py (PluginsManagementSection).
+    """
 
     def __init__(self):
         super().__init__()
@@ -262,54 +268,16 @@ class PluginsPanel(QWidget):
         heading.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
         outer.addWidget(heading)
 
-        tabs_row = QHBoxLayout()
-        tabs_row.setSpacing(6)
-        self.actions_tab_btn = QPushButton("Akce")
-        self.store_tab_btn = QPushButton("Obchod")
-        self.actions_tab_btn.setCursor(Qt.PointingHandCursor)
-        self.store_tab_btn.setCursor(Qt.PointingHandCursor)
-        self.actions_tab_btn.clicked.connect(lambda: self._switch_tab(0))
-        self.store_tab_btn.clicked.connect(lambda: self._switch_tab(1))
-        tabs_row.addWidget(self.actions_tab_btn)
-        tabs_row.addWidget(self.store_tab_btn)
-        tabs_row.addStretch()
-        outer.addLayout(tabs_row)
-
-        self.stack = QStackedWidget()
-        outer.addWidget(self.stack)
-
-        # --- stranka 0: "Akce" - vestavene + skutecne nainstalovane pluginy ---
-        self.actions_page = QWidget()
-        actions_layout = QVBoxLayout(self.actions_page)
-        actions_layout.setContentsMargins(0, 4, 0, 0)
-        actions_layout.setSpacing(6)
         hint = QLabel("Přetáhni akci na\ntlačítko nebo enkodér.")
         hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        actions_layout.addWidget(hint)
+        outer.addWidget(hint)
+
         self.actions_scroll = QScrollArea()
         self.actions_scroll.setWidgetResizable(True)
         self.actions_scroll.setFrameShape(QFrame.NoFrame)
-        actions_layout.addWidget(self.actions_scroll)
-
-        # --- stranka 1: "Obchod" - co jde stahnout ---
-        self.store_page = QWidget()
-        store_layout = QVBoxLayout(self.store_page)
-        store_layout.setContentsMargins(0, 4, 0, 0)
-        store_layout.setSpacing(6)
-        store_hint = QLabel("Stáhni si další pluginy.")
-        store_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        store_layout.addWidget(store_hint)
-        self.store_scroll = QScrollArea()
-        self.store_scroll.setWidgetResizable(True)
-        self.store_scroll.setFrameShape(QFrame.NoFrame)
-        store_layout.addWidget(self.store_scroll)
-
-        self.stack.addWidget(self.actions_page)
-        self.stack.addWidget(self.store_page)
+        outer.addWidget(self.actions_scroll)
 
         self._rebuild_actions_list()
-        self._rebuild_store_list()
-        self._switch_tab(0)
 
         self.setStyleSheet(f"background-color: {BG}; border-left: 1px solid rgba(255,255,255,0.06);")
 
@@ -323,24 +291,6 @@ class PluginsPanel(QWidget):
             return
         dialog = PluginSettingsDialog(plugin_id, module, message, parent=self)
         dialog.exec()
-
-    def _switch_tab(self, index: int):
-        self.stack.setCurrentIndex(index)
-        active_style = f"""
-            QPushButton {{
-                background-color: {ORANGE}; color: white; border: none;
-                border-radius: 8px; padding: 5px 12px; font-size: 12px; font-weight: 700;
-            }}
-        """
-        inactive_style = f"""
-            QPushButton {{
-                background-color: transparent; color: {TEXT_MUTED}; border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 8px; padding: 5px 12px; font-size: 12px; font-weight: 700;
-            }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,0.05); }}
-        """
-        self.actions_tab_btn.setStyleSheet(active_style if index == 0 else inactive_style)
-        self.store_tab_btn.setStyleSheet(active_style if index == 1 else inactive_style)
 
     def _rebuild_actions_list(self):
         inner = QWidget()
@@ -356,66 +306,3 @@ class PluginsPanel(QWidget):
 
         layout.addStretch()
         self.actions_scroll.setWidget(inner)
-
-    def _rebuild_store_list(self):
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignTop)
-
-        installed_ids = plugin_loader.installed_plugin_ids()
-        available = [p for p in plugin_loader.STORE_CATALOG if p["id"] not in installed_ids]
-
-        if not available:
-            empty = QLabel("Všechny dostupné pluginy\njsou už nainstalované.")
-            empty.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-            layout.addWidget(empty)
-        for plugin in available:
-            layout.addWidget(self._build_store_row(plugin))
-
-        layout.addStretch()
-        self.store_scroll.setWidget(inner)
-
-    def _build_store_row(self, plugin: dict) -> QFrame:
-        row = QFrame()
-        row.setStyleSheet("QFrame { background-color: #1c1c1f; border-radius: 8px; }")
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(10, 8, 10, 8)
-        label = QLabel(f"{plugin['icon']}  {plugin['name']}")
-        label.setStyleSheet(f"color: {TEXT}; font-size: 12px; background: transparent; border: none;")
-        row_layout.addWidget(label)
-        row_layout.addStretch()
-
-        install_btn = QPushButton("Instalovat")
-        install_btn.setCursor(Qt.PointingHandCursor)
-        install_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {ORANGE}; color: white; border: none;
-                border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600;
-            }}
-            QPushButton:hover {{ background-color: #e8650f; }}
-        """)
-        install_btn.clicked.connect(lambda checked=False, p=plugin, b=install_btn: self._install_plugin(p, b))
-        row_layout.addWidget(install_btn)
-        return row
-
-    def _install_plugin(self, plugin: dict, button: QPushButton):
-        button.setEnabled(False)
-        button.setText("Stahuji…")
-        QApplication.processEvents()  # aby se "Stahuji…" stihlo vykreslit pred blokujicim stahovanim
-
-        ok, error = plugin_loader.download_and_install(plugin["id"], plugin["zip_url"])
-
-        if not ok:
-            button.setEnabled(True)
-            button.setText("Instalovat")
-            QMessageBox.warning(
-                self, "Instalace se nezdařila",
-                f"Plugin '{plugin['name']}' se nepodařilo stáhnout/nainstalovat:\n\n{error}",
-            )
-            return
-
-        self._rebuild_actions_list()
-        self._rebuild_store_list()
-        self._switch_tab(0)
