@@ -38,10 +38,16 @@ da pretahnout. Jednorazove akce (napr. Prepnout scenu) jsou jen pro
 tlacitko; na enkoder se pretahnout nedaji (cil se behem tazeni ani
 nerozsvití, coz signalizuje nekompatibilitu).
 
-Layout: konfiguracni panel dole ma pevnou vysku (setFixedHeight), obrys
-PeciDecku ma stretch=1 v levem sloupci, takze pri zvetseni okna roste
-prave tahle cast (a centruje se v ni), misto aby vznikala prazdna
-cerna plocha pod panelem.
+Layout: leva strana je QSplitter (svisly) - nahore obrys PeciDecku +
+navigace stranek, dole ConfigPanel. Uzivatel muze tazenim za oddelovac
+zmenit vysku ConfigPanelu podle sebe (setChildrenCollapsible(False),
+takze ho nejde uplne schovat).
+
+Trvale ukladani: kompletni stav vsech stranek (tlacitka + enkodery) se
+uklada do user_config.json po kazde zmene (pretazeni, odebrani, zmena
+nazvu/hodnoty v konfiguracnim panelu, pridani/odebrani stranky) - viz
+persistence.py. Pri startu se soubor nacte; pokud neexistuje nebo je
+poskozeny, appka zacne s jednou prazdnou strankou jako doted.
 """
 
 import json
@@ -52,8 +58,8 @@ import webbrowser
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
-    QMenu, QLineEdit, QSlider, QFileDialog, QMessageBox, QComboBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel, QPushButton, QFrame,
+    QMenu, QLineEdit, QSlider, QFileDialog, QMessageBox, QComboBox, QSplitter,
 )
 
 try:
@@ -64,6 +70,7 @@ except ImportError:
     _Key = None
 
 from . import plugin_loader
+from . import persistence
 
 BG = "#111113"
 TEXT = "#f2f2f0"
@@ -504,94 +511,128 @@ class PageNavBar(QWidget):
 
 class ConfigPanel(QWidget):
     """
-    Panel s nastavenim vybrane akce - jen pod levym sloupcem. Umoznuje
-    zadat vlastni Nazev (uklada se a zobrazuje pod ikonkou primo na
-    tlacitku/enkoderu), pripadne dalsi pole podle typu akce (URL, cesta
-    k aplikaci, text, klavesova zkratka...), a tlacitko Otestovat pro
-    akce, ktere jdou spustit primo ze softwaru (bez hardwaru).
+    Panel s nastavenim vybrane akce - Elgato styl: vlevo velky ctvercovy
+    nahled (aktualni ikona + nazev), vpravo formularova pole (Nazev,
+    dropdown/text/URL/cesta podle typu akce, Otestovat) v QFormLayout.
+
+    Zije uvnitr QSplitter (viz DeviceDetailPage), takze uzivatel muze
+    tazenim menit jeho vysku - proto ma jen setMinimumHeight, ne pevnou
+    jako driv.
+
+    Kazda zmena hodnoty (nazev, URL, text, vyber z dropdownu, posuvnik...)
+    zavola on_change() callback - DeviceDetailPage na to hned ulozi cely
+    stav do user_config.json (viz persistence.py), aby nic nezmizelo po
+    restartu appky.
     """
 
-    def __init__(self, on_needs_settings=None):
+    def __init__(self, on_needs_settings=None, on_change=None):
         super().__init__()
         self._current_target = None
         self._on_needs_settings = on_needs_settings
+        self._on_change = on_change
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 14, 24, 14)
-        root.setSpacing(10)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(24, 16, 24, 16)
+        root.setSpacing(20)
+
+        # --- vlevo: velky ctvercovy nahled vybrane akce ---
+        self.preview_box = QFrame()
+        self.preview_box.setFixedSize(90, 90)
+        self.preview_box.setStyleSheet(f"""
+            QFrame {{ background-color: #1c1c1f; border: 1.5px solid {OUTLINE}; border-radius: 12px; }}
+        """)
+        preview_layout = QVBoxLayout(self.preview_box)
+        preview_layout.setContentsMargins(4, 8, 4, 8)
+        preview_layout.setSpacing(2)
+        self.preview_icon = QLabel("")
+        self.preview_icon.setAlignment(Qt.AlignCenter)
+        self.preview_icon.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 28px; background: transparent; border: none;")
+        self.preview_name = QLabel("")
+        self.preview_name.setAlignment(Qt.AlignCenter)
+        self.preview_name.setWordWrap(True)
+        self.preview_name.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px; background: transparent; border: none;")
+        preview_layout.addWidget(self.preview_icon)
+        preview_layout.addWidget(self.preview_name)
+        root.addWidget(self.preview_box, alignment=Qt.AlignTop)
+
+        # --- vpravo: hlavicka + formularova mrizka ---
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
 
         self.header_label = QLabel("Vyber tlačítko nebo enkodér")
         self.header_label.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 700;")
-        root.addWidget(self.header_label)
+        right_col.addWidget(self.header_label)
 
-        self.fields_layout = QVBoxLayout()
-        self.fields_layout.setSpacing(8)
-        root.addLayout(self.fields_layout)
+        self.form_layout = QFormLayout()
+        self.form_layout.setSpacing(8)
+        self.form_layout.setLabelAlignment(Qt.AlignLeft)
+        self.form_layout.setFormAlignment(Qt.AlignTop)
+        right_col.addLayout(self.form_layout)
+        right_col.addStretch()
 
-        self.setStyleSheet(f"background-color: {BG}; border-top: 1px solid rgba(255,255,255,0.08);")
-        self.setFixedHeight(210)
+        root.addLayout(right_col, 1)
+
+        self.setStyleSheet(f"background-color: {BG};")
+        self.setMinimumHeight(140)
 
     def show_for(self, target):
         """target = Keycap nebo EncoderDial (ma atribut .assigned)."""
         self._current_target = target
-        self._clear_fields()
+        self._clear_form()
 
         if target is None or target.assigned is None:
             self.header_label.setText("Prázdné – přetáhni sem akci z pravého panelu")
+            self.preview_icon.setText("")
+            self.preview_name.setText("")
+            self.preview_box.setStyleSheet(f"""
+                QFrame {{ background-color: #1c1c1f; border: 1.5px solid {OUTLINE}; border-radius: 12px; }}
+            """)
             return
 
         action = target.assigned
-        self.header_label.setText(action.get("title") or action["name"])
+        display_name = action.get("title") or action["name"]
+        self.header_label.setText(display_name)
+        self.preview_icon.setText(action.get("icon", ""))
+        self.preview_icon.setStyleSheet(f"color: {ORANGE}; font-size: 28px; background: transparent; border: none;")
+        self.preview_name.setText(display_name)
+        self.preview_box.setStyleSheet(f"""
+            QFrame {{ background-color: rgba(255,122,41,0.10); border: 1.5px solid {ORANGE}; border-radius: 12px; }}
+        """)
 
-        title_row = QHBoxLayout()
-        title_row.addWidget(self._muted_label("Název:"))
         title_edit = self._styled_line_edit(action.get("title", ""), action["name"])
         title_edit.editingFinished.connect(lambda a=action, e=title_edit, t=target: self._save_title(a, e, t))
-        title_row.addWidget(title_edit)
-        self.fields_layout.addLayout(title_row)
+        self.form_layout.addRow(self._muted_label("Název:"), title_edit)
 
         input_type = action.get("input_type")
 
         if input_type == "url":
-            row = QHBoxLayout()
-            row.addWidget(self._muted_label("URL:"))
             url_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "https://…")
-            url_edit.editingFinished.connect(lambda a=action, e=url_edit: a.update({"value": e.text()}))
-            row.addWidget(url_edit)
-            self.fields_layout.addLayout(row)
+            url_edit.editingFinished.connect(lambda a=action, e=url_edit: self._update_value(a, e.text()))
+            self.form_layout.addRow(self._muted_label("URL:"), url_edit)
 
         elif input_type == "path":
-            row = QHBoxLayout()
-            row.addWidget(self._muted_label("Cesta:"))
+            path_row = QHBoxLayout()
             path_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "Cesta k aplikaci")
-            path_edit.editingFinished.connect(lambda a=action, e=path_edit: a.update({"value": e.text()}))
-            row.addWidget(path_edit)
+            path_edit.editingFinished.connect(lambda a=action, e=path_edit: self._update_value(a, e.text()))
             browse_btn = QPushButton("Procházet…")
             browse_btn.setCursor(Qt.PointingHandCursor)
             browse_btn.clicked.connect(lambda a=action, e=path_edit: self._browse_for_path(a, e))
-            row.addWidget(browse_btn)
-            self.fields_layout.addLayout(row)
+            path_row.addWidget(path_edit)
+            path_row.addWidget(browse_btn)
+            self.form_layout.addRow(self._muted_label("Cesta:"), path_row)
 
         elif input_type == "text":
-            row = QHBoxLayout()
-            row.addWidget(self._muted_label("Text:"))
             text_edit = self._styled_line_edit(action.get("value", ""), action.get("placeholder") or "Text k napsání")
-            text_edit.editingFinished.connect(lambda a=action, e=text_edit: a.update({"value": e.text()}))
-            row.addWidget(text_edit)
-            self.fields_layout.addLayout(row)
+            text_edit.editingFinished.connect(lambda a=action, e=text_edit: self._update_value(a, e.text()))
+            self.form_layout.addRow(self._muted_label("Text:"), text_edit)
 
         elif input_type == "hotkey":
-            row = QHBoxLayout()
-            row.addWidget(self._muted_label("Zkratka:"))
             hotkey_edit = self._styled_line_edit(action.get("value", ""), "např. ctrl+shift+s")
-            hotkey_edit.editingFinished.connect(lambda a=action, e=hotkey_edit: a.update({"value": e.text()}))
-            row.addWidget(hotkey_edit)
-            self.fields_layout.addLayout(row)
+            hotkey_edit.editingFinished.connect(lambda a=action, e=hotkey_edit: self._update_value(a, e.text()))
+            self.form_layout.addRow(self._muted_label("Zkratka:"), hotkey_edit)
 
         elif input_type == "choice":
-            row = QHBoxLayout()
-            row.addWidget(self._muted_label("Hodnota:"))
-
+            choice_row = QHBoxLayout()
             combo = QComboBox()
             combo.setStyleSheet(f"""
                 QComboBox {{
@@ -609,8 +650,7 @@ class ConfigPanel(QWidget):
                     combo.setCurrentText(current_value)
             else:
                 combo.addItem("(nic nenalezeno - zkus Obnovit)")
-            combo.currentTextChanged.connect(lambda text, a=action: a.update({"value": text}))
-            row.addWidget(combo, 1)
+            combo.currentTextChanged.connect(lambda text, a=action: self._update_value(a, text))
 
             refresh_btn = QPushButton("\u21BB")
             refresh_btn.setFixedSize(28, 28)
@@ -621,9 +661,10 @@ class ConfigPanel(QWidget):
                 QPushButton:hover {{ background-color: rgba(255,255,255,0.06); }}
             """)
             refresh_btn.clicked.connect(lambda checked=False, t=target: self.show_for(t))
-            row.addWidget(refresh_btn)
 
-            self.fields_layout.addLayout(row)
+            choice_row.addWidget(combo, 1)
+            choice_row.addWidget(refresh_btn)
+            self.form_layout.addRow(self._muted_label("Hodnota:"), choice_row)
 
         elif action.get("has_amount"):
             amount_row = QHBoxLayout()
@@ -633,19 +674,44 @@ class ConfigPanel(QWidget):
             hi.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
             slider = QSlider(Qt.Horizontal)
             slider.setRange(0, 100)
-            slider.setValue(50)
+            try:
+                slider.setValue(int(action.get("value") or 50))
+            except (TypeError, ValueError):
+                slider.setValue(50)
+            slider.sliderReleased.connect(lambda a=action, s=slider: self._update_value(a, s.value()))
             amount_row.addWidget(lo)
             amount_row.addWidget(slider)
             amount_row.addWidget(hi)
-            self.fields_layout.addLayout(amount_row)
+            self.form_layout.addRow(self._muted_label("Množství:"), amount_row)
 
         if action.get("plugin_id") != "navigation":
-            self._add_test_row(action)
+            test_btn = QPushButton("Otestovat")
+            test_btn.setCursor(Qt.PointingHandCursor)
+            test_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ORANGE}; color: white; border: none;
+                    border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: #e8650f; }}
+            """)
+            test_btn.clicked.connect(lambda checked=False, a=action: self._run_action(a))
+            self.form_layout.addRow(QLabel(""), test_btn)
 
     def _save_title(self, action: dict, edit: QLineEdit, target):
         action["title"] = edit.text().strip()
         target.assign(action)  # prekresli ikonku/nazev na samotnem tlacitku/enkoderu
-        self.header_label.setText(action.get("title") or action["name"])
+        display_name = action.get("title") or action["name"]
+        self.header_label.setText(display_name)
+        self.preview_name.setText(display_name)
+        self._notify_change()
+
+    def _update_value(self, action: dict, value):
+        action["value"] = value
+        self._notify_change()
+
+    def _notify_change(self):
+        if self._on_change:
+            self._on_change()
 
     def _muted_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -663,45 +729,36 @@ class ConfigPanel(QWidget):
         """)
         return edit
 
-    def _add_test_row(self, action: dict):
-        row = QHBoxLayout()
-        row.addStretch()
-        test_btn = QPushButton("Otestovat")
-        test_btn.setCursor(Qt.PointingHandCursor)
-        test_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {ORANGE}; color: white; border: none;
-                border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;
-            }}
-            QPushButton:hover {{ background-color: #e8650f; }}
-        """)
-        test_btn.clicked.connect(lambda checked=False, a=action: self._run_action(a))
-        row.addWidget(test_btn)
-        self.fields_layout.addLayout(row)
-
-    def _clear_fields(self):
-        while self.fields_layout.count():
-            item = self.fields_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                sub = item.layout()
-                while sub.count():
-                    sub_item = sub.takeAt(0)
-                    if sub_item.widget():
-                        sub_item.widget().deleteLater()
+    def _clear_form(self):
+        while self.form_layout.rowCount() > 0:
+            label_item = self.form_layout.itemAt(0, QFormLayout.LabelRole)
+            field_item = self.form_layout.itemAt(0, QFormLayout.FieldRole)
+            for item in (label_item, field_item):
+                if item is None:
+                    continue
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+                    continue
+                sub_layout = item.layout()
+                if sub_layout is not None:
+                    while sub_layout.count():
+                        sub_item = sub_layout.takeAt(0)
+                        if sub_item.widget():
+                            sub_item.widget().deleteLater()
+            self.form_layout.removeRow(0)
 
     def _browse_for_path(self, action: dict, edit: QLineEdit):
         path, _ = QFileDialog.getOpenFileName(self, "Vyber aplikaci")
         if path:
             edit.setText(path)
-            action["value"] = path
+            self._update_value(action, path)
 
     def _run_action(self, action: dict):
         # Bez hardwaru zatim takhle rucne overujeme, ze akce doopravdy neco dela.
         action_id = action.get("action_id")
         plugin_id = action.get("plugin_id")
-        value = (action.get("value") or "").strip()
+        value = str(action.get("value") or "").strip()
 
         if plugin_id == "system":
             self._run_system_action(action_id, value)
@@ -790,7 +847,8 @@ class DeviceDetailPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.pages = [self._blank_page()]
+        loaded_pages = persistence.load_pages()
+        self.pages = loaded_pages if loaded_pages else [self._blank_page()]
         self.current_page_index = 0
         self._selected_target = None
 
@@ -819,29 +877,45 @@ class DeviceDetailPage(QWidget):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
-        # --- levy sloupec (~80 %): obrys + navigace stranek + konfiguracni panel, zarovnano nahoru ---
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.setContentsMargins(0, 24, 0, 0)
-        left_layout.setSpacing(0)
+        # --- levy sloupec (~80 %): QSplitter - nahore obrys + navigace stranek, dole konfiguracni panel ---
+        # Uzivatel muze tazenim za oddelovac menit vysku konfiguracniho panelu.
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStyleSheet("""
+            QSplitter::handle { background-color: rgba(255,255,255,0.06); }
+            QSplitter::handle:hover { background-color: rgba(255,122,41,0.35); }
+        """)
+
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 24, 0, 0)
+        top_layout.setSpacing(0)
 
         self.outline = DeviceOutline()
-        left_layout.addWidget(self.outline, stretch=1, alignment=Qt.AlignCenter)
+        top_layout.addWidget(self.outline, stretch=1, alignment=Qt.AlignCenter)
 
         self.page_nav = PageNavBar(
             on_page_selected=self._go_to_page,
             on_add_page=self._add_page,
             on_remove_page=self._remove_page,
         )
-        left_layout.addWidget(self.page_nav)
+        top_layout.addWidget(self.page_nav)
 
-        self.config_panel = ConfigPanel(on_needs_settings=self._handle_needs_settings)
-        left_layout.addWidget(self.config_panel)
+        self.config_panel = ConfigPanel(
+            on_needs_settings=self._handle_needs_settings,
+            on_change=self._save_state,
+        )
+
+        self.splitter.addWidget(top_widget)
+        self.splitter.addWidget(self.config_panel)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([420, 160])
 
         # --- pravy sloupec (~20 %, cela vyska) ---
         self.plugins_panel = PluginsPanel()
 
-        body.addWidget(left_container, stretch=4)
+        body.addWidget(self.splitter, stretch=4)
         body.addWidget(self.plugins_panel, stretch=1)
         root.addLayout(body)
 
@@ -856,11 +930,17 @@ class DeviceDetailPage(QWidget):
 
         self.setStyleSheet(f"background-color: {BG};")
 
+        self.page_nav.set_page_count(len(self.pages))
+        self._go_to_page(0)
+
     def _blank_page(self):
         return {"buttons": [None] * 8, "encoders": [None] * 3}
 
     def set_device_name(self, name: str):
         self.title_label.setText(name)
+
+    def _save_state(self):
+        persistence.save_pages(self.pages)
 
     def _handle_needs_settings(self, plugin_id: str, message: str):
         self.plugins_panel.open_settings_dialog(plugin_id, message)
@@ -875,10 +955,12 @@ class DeviceDetailPage(QWidget):
     def _on_keycap_dropped(self, keycap: Keycap):
         self.pages[self.current_page_index]["buttons"][keycap.index] = keycap.assigned
         self._select_target(keycap)
+        self._save_state()
 
     def _on_encoder_dropped(self, encoder: EncoderDial):
         self.pages[self.current_page_index]["encoders"][encoder.index] = encoder.assigned
         self._select_target(encoder)
+        self._save_state()
 
     def _on_target_removed(self, target):
         page = self.pages[self.current_page_index]
@@ -888,6 +970,7 @@ class DeviceDetailPage(QWidget):
             page["encoders"][target.index] = None
         if self._selected_target is target:
             self.config_panel.show_for(target)
+        self._save_state()
 
     def _go_to_page(self, index: int):
         if index < 0 or index >= len(self.pages):
@@ -916,6 +999,7 @@ class DeviceDetailPage(QWidget):
         self.pages.append(self._blank_page())
         self.page_nav.set_page_count(len(self.pages))
         self._go_to_page(len(self.pages) - 1)
+        self._save_state()
 
     def _remove_page(self, index: int):
         if len(self.pages) <= 1:
@@ -940,3 +1024,4 @@ class DeviceDetailPage(QWidget):
 
         self.page_nav.set_page_count(len(self.pages))
         self._go_to_page(new_index)
+        self._save_state()

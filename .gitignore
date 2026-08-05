@@ -1,6 +1,7 @@
 # Ignorovat konfigurace s citlivými údaji
 config.json
 *.json
+user_config.json
 
 # Ignorovat Python mezipaměť
 __pycache__/
